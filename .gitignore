@@ -1,0 +1,12 @@
+# Rust build output
+/target
+
+# Internal orchestration state (never published)
+/.ai-work
+
+# Local runtime cache (deck lives in XDG cache, but ignore if run in-tree)
+/.cache
+
+# OS / editor
+.DS_Store
+*.swp

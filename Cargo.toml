@@ -1,0 +1,32 @@
+[package]
+name = "tutor"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+description = "Local omp tutor: per-window work board, auto-mined study loop, and a daily briefing (reads omp sessions, brains via omp -p)"
+license = "MIT"
+readme = "README.md"
+keywords = ["omp", "dashboard", "tui", "kanban", "productivity"]
+categories = ["command-line-utilities"]
+repository = "https://github.com/tomtdhzz/tutor"
+homepage = "https://github.com/tomtdhzz/tutor"
+
+[[bin]]
+name = "tutor"
+path = "src/main.rs"
+
+[lib]
+name = "tutor"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+ratatui = "0.29"
+crossterm = "0.28"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true

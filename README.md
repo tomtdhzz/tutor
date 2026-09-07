@@ -1,0 +1,204 @@
+# tutor
+
+**Your local omp tutor: it turns the "things you don't know" scattered across your coding sessions into a course with a review schedule — and keeps an eye on every window and files you a daily briefing.**
+
+[English](README.md) · [简体中文](README.zh-CN.md)
+
+You learn by doing: you run [`omp`](https://github.com/can1357/oh-my-pi) across many
+terminal tabs, ask it questions, hit errors, and move on. The problem is that the *things
+you didn't know* evaporate — no one collects them, and nothing brings them back for review.
+`headroom` (its sibling) tells you how much *quota* each model has left. `tutor` is the
+teacher for the rest:
+
+> *What don't I know yet, and when should I review it? What is each tab actually working on
+> and how far along is it? And — what did I do today?*
+
+`tutor` is **read-only**: it never changes your `omp` config or switches anything. It reads
+the session store under `~/.omp/agent`, turns it into a terminal dashboard (drop it into a
+zellij/tmux pane next to `headroom`), and — only when you ask — borrows `omp -p` to distill
+your unknowns and narrate the day.
+
+The whole UI toggles between English and 中文 at runtime (`l`), so a single build serves both.
+
+## The effect
+
+```
+Study · due today (5)
+  [Preview]   Rust lifetimes & the borrow checker            ×3
+  [Review]    ratatui wide-char cell layout                  ×2   ← due today
+  [Class]     the title slot in omp session JSONL            ×1
+
+  Preview   surface the unknowns     12 ▍▍▍▍▍▍▍▍▍▍▍▍
+  Class     solve the unknowns        5 ▍▍▍▍▍
+  Homework  test the unknowns         2 ▍▍
+  Review    grind the unknowns        4 ▍▍▍▍
+  Correct   eliminate the unknowns    7 ▍▍▍▍▍▍▍
+
+Board · Doing (3)
+  Refine TUI activity meter and tests   [LIVE]
+  ██████████████ ~    tutor · 2s ago
+```
+
+## What it does
+
+### 1 · Study loop — the heart
+The organising idea, in one breath: *preview surfaces what you don't know, class solves it,
+homework tests it, review grinds it, correcting errors eliminates it.* `tutor` auto-mines
+the "things you don't know" (your questions, the errors you hit) from recent sessions into
+cards and cycles each through **Preview → Class → Homework → Review → Correct**. The Review
+stage runs a spaced-repetition schedule (1/3/7/14/30 days), so the deck always shows what is
+**due today**. Mining works offline (heuristic); press `m` and `omp -p` distills sharper
+topics and assigns each a stage.
+
+### 2 · Work board
+Your tutor also keeps track of what you're working on. Every terminal tab / session becomes a
+card; the **proposition** is auto-inferred from the session title, and cards fall into **To
+do / Doing / Done** by a rule-based classifier (recent activity, todo completion, lifecycle).
+Cards bound to a live terminal are tagged **LIVE**. Progress is the todo completion percentage
+when a session declared todos, or an honest message-volume activity meter (marked `~`) when it
+didn't — it never fakes "done".
+
+### 3 · Daily briefing
+A rolled-up account of the day — what moved, what finished, what is waiting on you, and what to
+review — as structured facts, optionally narrated into prose by `omp -p`, and exportable as
+Markdown.
+
+## Prerequisites
+
+Platforms: macOS or Linux.
+
+1. **omp** ([Oh My Pi](https://github.com/can1357/oh-my-pi)) — on your `PATH`. `tutor` reads
+   its session store under `~/.omp/agent`, and the "brain" shells out to `omp -p` using your
+   logged-in accounts (only for the `m`/`b` actions and `tutor briefing`).
+2. **Rust toolchain 1.88+** to build from source (via [rustup](https://rustup.rs)).
+
+Dependencies are pure Rust (serde, serde_json, anyhow, ratatui, crossterm) and built by cargo.
+
+## Install
+
+With cargo, straight from the repo (no clone):
+
+```bash
+cargo install --git https://github.com/tomtdhzz/tutor
+```
+
+Or from a local checkout:
+
+```bash
+git clone https://github.com/tomtdhzz/tutor
+cd tutor
+cargo install --path .        # or: cargo run --release -- tui
+```
+
+Once a release is tagged, a Homebrew formula is published to the tap:
+
+```bash
+brew install tomtdhzz/tap/tutor
+```
+
+## Usage
+
+```bash
+# One-shot: print the work board and exit
+tutor
+tutor board
+
+# Interactive dashboard (Study / Board / Brief tabs)
+tutor tui
+
+# Compose today's briefing as Markdown (narrated via omp -p)
+tutor briefing > today.md
+
+# Structured facts only, no LLM call
+tutor briefing --no-llm
+
+# Force a language (auto-detected from locale otherwise; order-independent)
+tutor --lang en
+tutor board --lang zh
+```
+
+TUI keys: `Tab` / `1` `2` `3` switch tabs · `←→` move column, `↑↓`/`jk` select ·
+`m` mine study (omp -p) · `b` generate briefing (omp -p) · `r` refresh · `l` 中/EN · `q` quit.
+
+Options:
+
+| Flag | Meaning |
+|---|---|
+| `--lang <zh\|en>` | Display language (default: auto-detect from `LANG`/`LC_*`) |
+| `--no-llm` | Do not call `omp -p` (`briefing` prints rule-based facts only) |
+| `-h, --help` | Print help |
+| `-v, --version` | Print version |
+
+Environment: `TUTOR_OMP_DIR` overrides the omp agent directory (default `~/.omp/agent`).
+
+## How it reads your sessions
+
+- `~/.omp/agent/terminal-sessions/<id>` — a breadcrumb binding a terminal tab to a session
+  file (line 1 = cwd, line 2 = path). This is the **LIVE** signal.
+- `~/.omp/agent/sessions/<cwd>/<ts>_<id>.jsonl` — the transcript. `tutor` reads the session
+  title (→ proposition), message/tool counts and timestamps (→ activity, recency),
+  `session_exit` (→ lifecycle), any `user_todo_edit` (→ progress), and cue-bearing user lines
+  (→ study candidates). Malformed lines are skipped, never fatal. `tutor`'s own `omp -p` calls
+  run with `--no-session`, so the tutor never ingests its own prompts.
+
+## Architecture
+
+A lightweight hexagon; the domain is pure and IO-free (mirrors its sibling `headroom`).
+
+```
+delivery/{cli,tui,i18n} ─┐
+main ─────────┤→ app (Tutor use case + ports)
+              │        │
+              │        └→ domain (StudyDeck/Unknown/LoopStage, Board/WorkItem/WorkState,
+              │                    DailyBriefing)
+              └ adapters: omp_sessions · omp_summarize (omp -p) · cache_file · clock ─┘
+```
+
+Rule-based data (study schedule, board, progress, structured briefing) renders instantly with
+**no** LLM call; `omp -p` only enriches (study distillation, briefing prose) and is always
+behind an explicit key. All user-facing strings live in `delivery/i18n` (zh/EN); the domain
+holds no language. See [`docs/prd/PRD.md`](docs/prd/PRD.md) and
+[`docs/tech-design/tech-design.md`](docs/tech-design/tech-design.md).
+
+## Privacy
+
+Read-only with respect to omp: `tutor` never writes anything under `~/.omp`. The only thing it
+persists is the study deck at `$XDG_CACHE_HOME/tutor/deck.json` (or `~/.cache/tutor/deck.json`)
+— topics/details/stages/timestamps, never credentials, emails, or raw session content.
+
+## Test
+
+```bash
+cargo test                                  # unit + TUI render tests
+cargo clippy --all-targets -- -D warnings
+cargo fmt --check
+```
+
+## Limitations
+
+- **Read-only.** v0 observes and teaches; it does not act on omp.
+- **Loop stage is inferred.** v0 assigns study stages heuristically or via `omp -p`; manual card
+  actions (promote stage, mark resolved, reschedule a review) are planned for v1.
+- **Heuristic mining is noisy.** Offline candidates are raw questions/errors; `m` (omp -p) is
+  what turns them into sharp, deduplicated knowledge points.
+- **Todos are sparse**, so board progress usually falls back to a message-volume activity proxy
+  (marked `~`), not true completion. **"LIVE" means tab-bound, not process-alive** — terminal
+  breadcrumbs persist after a tab closes; recency carries the freshness signal.
+- **The brain is `omp -p`.** Mining/narration cost a few seconds and some quota; they run only
+  on `m`/`b`, never on the render path.
+
+## Roadmap
+
+- **v1** — manual card actions in the TUI (promote stage / mark resolved / reschedule); a
+  `watch` mode with auto-refresh.
+- **v2** — richer progress from tool-call/diff signals; per-project board filter; on-disk
+  briefing cache per day.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
+
+## Disclaimer
+
+Independent project, not affiliated with or endorsed by the `omp` / Oh My Pi authors,
+Anthropic, or OpenAI. Provider and omp interfaces may change.
