@@ -84,7 +84,11 @@ impl Syllabus {
                     card.last_seen = now;
                 }
             } else {
-                let stage = if t.done { LoopStage::Correct } else { LoopStage::Preview };
+                let stage = if t.done {
+                    LoopStage::Correct
+                } else {
+                    LoopStage::Preview
+                };
                 deck.add_if_absent(Unknown::seed(&t.title, &detail, &self.subject, stage, now));
                 added += 1;
             }
