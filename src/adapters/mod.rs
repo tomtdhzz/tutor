@@ -4,10 +4,12 @@
 
 pub mod cache_file;
 pub mod clock;
+pub mod course_dir;
 pub mod omp_sessions;
 pub mod omp_summarize;
 
 pub use cache_file::FileDeckStore;
 pub use clock::SystemClock;
+pub use course_dir::CourseDir;
 pub use omp_sessions::OmpSessions;
 pub use omp_summarize::OmpSummarizer;

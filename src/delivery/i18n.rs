@@ -201,4 +201,42 @@ impl Locale {
             Locale::En => format!("Error: {e}"),
         }
     }
+
+    pub fn course_tab(self, idx: usize) -> &'static str {
+        match (self, idx) {
+            (Locale::Zh, 0) => "复习",
+            (Locale::Zh, 1) => "课程",
+            (Locale::Zh, _) => "进度",
+            (Locale::En, 0) => "Review",
+            (Locale::En, 1) => "Course",
+            (Locale::En, _) => "Progress",
+        }
+    }
+
+    pub fn course_header(self, subject: &str, mastered: usize, total: usize) -> String {
+        match self {
+            Locale::Zh => format!(" 私人教师 · {subject} · 已掌握 {mastered}/{total} "),
+            Locale::En => format!(" tutor · {subject} · {mastered}/{total} mastered "),
+        }
+    }
+
+    pub fn course_footer(self, tab: usize) -> &'static str {
+        match (self, tab) {
+            (Locale::Zh, 1) => {
+                " Tab/1-3 · ←→ 列 · ↑↓ 选 · . 进阶 · , 退阶 · 空格 复习 · r 重载路线 · l 中/EN · q "
+            }
+            (Locale::Zh, _) => " Tab/1-3 切换 · r 重载路线(roadmap.md) · l 中/EN · q 退出 ",
+            (Locale::En, 1) => {
+                " Tab/1-3 · ←→ col · ↑↓ pick · . advance · , back · space review · r reload · l · q "
+            }
+            (Locale::En, _) => " Tab/1-3 switch · r reload roadmap.md · l zh/EN · q quit ",
+        }
+    }
+
+    pub fn course_empty(self) -> &'static str {
+        match self {
+            Locale::Zh => "这门课还没有路线。编辑 roadmap.md 后按 r 重载。",
+            Locale::En => "No roadmap yet. Edit roadmap.md and press r to reload.",
+        }
+    }
 }

@@ -64,6 +64,16 @@ impl LoopStage {
             _ => None,
         }
     }
+
+    /// The next stage toward mastery (Correct is terminal).
+    pub fn next(self) -> LoopStage {
+        LoopStage::from_index((self.index() + 1).min(4))
+    }
+
+    /// The previous stage (Preview is the floor).
+    pub fn prev(self) -> LoopStage {
+        LoopStage::from_index(self.index().saturating_sub(1))
+    }
 }
 
 /// One 不会的: a knowledge point / gap mined from sessions.
@@ -132,6 +142,24 @@ impl Unknown {
         self.last_seen = now;
         self.next_review = now + Self::interval(self.reviews);
     }
+
+    /// Move one stage toward mastery, stamping recency. Entering Review schedules
+    /// the first spaced review from `now`.
+    pub fn promote(&mut self, now: SystemTime) {
+        let next = self.stage.next();
+        if next == LoopStage::Review && self.stage != LoopStage::Review {
+            self.reviews = 0;
+            self.next_review = now + Self::interval(0);
+        }
+        self.stage = next;
+        self.last_seen = now;
+    }
+
+    /// Move one stage back toward Preview, stamping recency.
+    pub fn demote(&mut self, now: SystemTime) {
+        self.stage = self.stage.prev();
+        self.last_seen = now;
+    }
 }
 
 /// Normalize a topic into a stable id: lowercase, collapse whitespace.
@@ -167,6 +195,21 @@ impl StudyDeck {
         } else {
             self.cards.push(incoming);
         }
+    }
+
+    /// Insert a card only if its id is not already present. Used when re-parsing a
+    /// roadmap so hand edits add new topics without resetting progress on existing.
+    pub fn add_if_absent(&mut self, card: Unknown) -> bool {
+        if self.cards.iter().any(|c| c.id == card.id) {
+            return false;
+        }
+        self.cards.push(card);
+        true
+    }
+
+    /// Mutable access to a card by id (for manual stage promotion in the TUI).
+    pub fn get_mut(&mut self, id: &str) -> Option<&mut Unknown> {
+        self.cards.iter_mut().find(|c| c.id == id)
     }
 
     /// Cards wanting attention now, most-recently-seen first.
@@ -225,6 +268,24 @@ mod tests {
         u.reschedule(t(86_400)); // reviews -> 1, interval 3d
         assert!(!u.is_due(t(86_400 + 3600)));
         assert!(u.is_due(t(86_400 + 3 * 86_400)));
+    }
+
+    #[test]
+    fn promote_and_demote_walk_the_loop() {
+        let mut u = Unknown::seed("x", "d", "p", LoopStage::Preview, t(0));
+        u.promote(t(10)); // Preview -> Class
+        assert_eq!(u.stage, LoopStage::Class);
+        u.promote(t(20)); // Class -> Homework
+        u.promote(t(30)); // Homework -> Review: first review scheduled from now
+        assert_eq!(u.stage, LoopStage::Review);
+        assert_eq!(u.reviews, 0);
+        assert_eq!(u.next_review, t(30) + Duration::from_secs(86_400));
+        u.promote(t(40)); // Review -> Correct
+        u.promote(t(50)); // Correct is terminal
+        assert_eq!(u.stage, LoopStage::Correct);
+        u.demote(t(60)); // Correct -> Review
+        assert_eq!(u.stage, LoopStage::Review);
+        assert_eq!(LoopStage::Preview.prev(), LoopStage::Preview); // floor
     }
 
     #[test]

@@ -57,6 +57,29 @@
 把一天汇总成账：今天推进了什么、完成了什么、什么在等你、该复习什么——先是结构化事实，可选由 `omp -p`
 叙述成一段话，并能导出 Markdown。
 
+## 课程 —— 给私人教师指定一个学科
+
+给它一个空目录和一个学科,它会把**学习路线**(grounding 在公认路线上——算法用 NeetCode /
+roadmap.sh / LeetCode 分类)起草成可编辑的 `roadmap.md`,再打开一个**课程看板**,由你手动推进。
+每个路线 Topic 是一张卡,走 预习 → 听课 → 作业 → 复习 → 改错;`roadmap.md` 里 `- [x]` 表示已掌握,
+`- [ ]` 绝不会重置你的进度。整门课自包含在目录里(`roadmap.md` + `.tutor/deck.json`),可 git、可迁移。
+
+```bash
+# 把算法路线起草进 ./algo 并建课
+tutor course new ./algo --subject "algorithms"
+
+# (改 ./algo/roadmap.md —— 重排、增删、把已会的 `- [x]` 勾掉)
+
+# 打开交互式课程仪表盘(复习 / 课程 / 进度 三页)
+tutor course ./algo
+
+# 或一次性打印课程看板
+tutor course board ./algo
+```
+
+课程仪表盘里:`←→`/`↑↓` 选卡,`.` 进阶,`,` 退阶,`空格` 标记已复习(排下一次间隔复习),`r` 重载路线改动。
+离线?`tutor course new … --no-llm` 会写一份 starter 路线让你自己填。
+
 ## 前置条件
 
 平台：macOS 或 Linux。

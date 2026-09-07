@@ -8,6 +8,7 @@
 //! Rule-based data renders instantly. `m` (mine) and `b` (brief) are the only
 //! actions that call the LLM; both draw a status frame first, then block briefly.
 
+use std::path::PathBuf;
 use std::time::SystemTime;
 
 use anyhow::Result;
@@ -21,8 +22,10 @@ use ratatui::{DefaultTerminal, Frame};
 use super::i18n::Locale;
 use super::{bar, today_local, truncate};
 use crate::app::{DeckStore, ScannedSession, Summarizer, Tutor};
-use crate::domain::study::LoopStage;
-use crate::domain::{human_ago, Board, Column, DailyBriefing, StudyDeck, WorkItem};
+use crate::domain::study::{LoopStage, Unknown};
+use crate::domain::{
+    course, human_ago, Board, Column, CourseProgress, DailyBriefing, StudyDeck, WorkItem, WorkState,
+};
 
 const ACCENT: Color = Color::Green;
 
@@ -31,6 +34,11 @@ enum Pending {
     None,
     Mine,
     Brief,
+}
+/// Course mode binds the dashboard to a subject folder instead of the omp windows.
+struct CourseCtx {
+    dir: PathBuf,
+    subject: String,
 }
 
 struct App<'a> {
@@ -49,6 +57,8 @@ struct App<'a> {
     col: usize,
     rows: [usize; 3],
     study_row: usize,
+    /// `Some` when the dashboard is scoped to a subject course.
+    course: Option<CourseCtx>,
 }
 
 impl<'a> App<'a> {
@@ -57,13 +67,16 @@ impl<'a> App<'a> {
         store: &'a dyn DeckStore,
         summarizer: &'a dyn Summarizer,
         locale: Locale,
+        course: Option<CourseCtx>,
     ) -> Result<App<'a>> {
+        let course_mode = course.is_some();
         let mut app = App {
             tutor,
             store,
             summarizer,
             locale,
-            tab: 0,
+            // Course opens on its kanban (tab 1); window mode opens on Study (tab 0).
+            tab: if course_mode { 1 } else { 0 },
             scans: Vec::new(),
             board: Board::build(Vec::new(), tutor.now()),
             deck: StudyDeck::default(),
@@ -71,23 +84,33 @@ impl<'a> App<'a> {
             updated: tutor.now(),
             status: String::new(),
             pending: Pending::None,
-            col: 1,
+            col: if course_mode { 0 } else { 1 },
             rows: [0; 3],
             study_row: 0,
+            course,
         };
         app.refresh()?;
         app.status.clear();
         Ok(app)
     }
 
-    /// Re-scan disk, rebuild the board, and refresh the study deck (heuristic
-    /// seed merged into whatever is cached), persisting the deck.
+    /// Reload state. In course mode: load the deck, re-merge the (possibly hand-
+    /// edited) roadmap, persist. In window mode: re-scan omp and reseed heuristics.
     fn refresh(&mut self) -> Result<()> {
-        self.scans = self.tutor.scan()?;
-        self.board = self.tutor.board(&self.scans);
-        let base = self.store.load().unwrap_or_default();
-        self.deck = self.tutor.seed_heuristic(&self.scans, base);
-        let _ = self.store.save(&self.deck);
+        if let Some(c) = &self.course {
+            let mut deck = self.store.load().unwrap_or_default();
+            if let Ok(md) = std::fs::read_to_string(c.dir.join("roadmap.md")) {
+                course::Syllabus::parse(&md, &c.subject).merge_into(&mut deck, self.tutor.now());
+            }
+            let _ = self.store.save(&deck);
+            self.deck = deck;
+        } else {
+            self.scans = self.tutor.scan()?;
+            self.board = self.tutor.board(&self.scans);
+            let base = self.store.load().unwrap_or_default();
+            self.deck = self.tutor.seed_heuristic(&self.scans, base);
+            let _ = self.store.save(&self.deck);
+        }
         self.brief = None;
         self.updated = self.tutor.now();
         self.status = self.locale.status_refreshed().to_string();
@@ -123,9 +146,39 @@ impl<'a> App<'a> {
         self.board.columns()
     }
 
+    /// Item counts of the active board's three columns (course kanban or windows).
+    fn board_col_lens(&self) -> [usize; 3] {
+        if self.course.is_some() {
+            let [a, b, c] = course::columns(&self.deck);
+            [a.len(), b.len(), c.len()]
+        } else {
+            self.board.columns().map(|c| c.items.len())
+        }
+    }
+
+    /// The course card currently selected on the kanban (course mode, tab 1).
+    fn selected_card_id(&self) -> Option<String> {
+        self.course.as_ref()?;
+        let cols = course::columns(&self.deck);
+        cols[self.col.min(2)]
+            .get(self.rows[self.col.min(2)])
+            .map(|u| u.id.clone())
+    }
+
+    fn edit_selected(&mut self, f: impl Fn(&mut Unknown, SystemTime)) {
+        let now = self.tutor.now();
+        if let Some(id) = self.selected_card_id() {
+            if let Some(card) = self.deck.get_mut(&id) {
+                f(card, now);
+                let _ = self.store.save(&self.deck);
+            }
+        }
+        self.clamp();
+    }
+
     fn clamp(&mut self) {
         self.col = self.col.min(2);
-        let lens = self.board.columns().map(|c| c.items.len());
+        let lens = self.board_col_lens();
         for (row, len) in self.rows.iter_mut().zip(lens) {
             *row = (*row).min(len.saturating_sub(1));
         }
@@ -142,7 +195,7 @@ impl<'a> App<'a> {
                 }
             }
             1 => {
-                let len = self.columns()[self.col].items.len();
+                let len = self.board_col_lens()[self.col];
                 if len > 0 && self.rows[self.col] + 1 < len {
                     self.rows[self.col] += 1;
                 }
@@ -178,7 +231,29 @@ pub fn run(
     summarizer: &dyn Summarizer,
     locale: Locale,
 ) -> Result<()> {
-    let mut app = App::new(tutor, store, summarizer, locale)?;
+    let mut app = App::new(tutor, store, summarizer, locale, None)?;
+    let mut terminal = ratatui::init();
+    let result = run_loop(&mut terminal, &mut app);
+    ratatui::restore();
+    result
+}
+
+/// Enter course mode: the dashboard is scoped to a subject folder.
+pub fn run_course(
+    tutor: &Tutor,
+    store: &dyn DeckStore,
+    summarizer: &dyn Summarizer,
+    locale: Locale,
+    dir: PathBuf,
+    subject: String,
+) -> Result<()> {
+    let mut app = App::new(
+        tutor,
+        store,
+        summarizer,
+        locale,
+        Some(CourseCtx { dir, subject }),
+    )?;
     let mut terminal = ratatui::init();
     let result = run_loop(&mut terminal, &mut app);
     ratatui::restore();
@@ -217,13 +292,27 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
                     KeyCode::Char('1') => app.tab = 0,
                     KeyCode::Char('2') => app.tab = 1,
                     KeyCode::Char('3') => app.tab = 2,
-                    KeyCode::Char('m') if app.tab == 0 => {
+                    KeyCode::Char('m') if app.tab == 0 && app.course.is_none() => {
                         app.status = app.locale.status_mining().to_string();
                         app.pending = Pending::Mine;
                     }
-                    KeyCode::Char('b') if app.tab == 2 => {
+                    KeyCode::Char('b') if app.tab == 2 && app.course.is_none() => {
                         app.status = app.locale.status_briefing().to_string();
                         app.pending = Pending::Brief;
+                    }
+                    // Course kanban (tab 1): manual stage advancement.
+                    KeyCode::Char('.') | KeyCode::Char('>')
+                        if app.course.is_some() && app.tab == 1 =>
+                    {
+                        app.edit_selected(|c, now| c.promote(now));
+                    }
+                    KeyCode::Char(',') | KeyCode::Char('<')
+                        if app.course.is_some() && app.tab == 1 =>
+                    {
+                        app.edit_selected(|c, now| c.demote(now));
+                    }
+                    KeyCode::Char(' ') if app.course.is_some() && app.tab == 1 => {
+                        app.edit_selected(|c, now| c.reschedule(now));
                     }
                     KeyCode::Down | KeyCode::Char('j') => app.down(),
                     KeyCode::Up | KeyCode::Char('k') => app.up(),
@@ -249,7 +338,9 @@ fn ui(frame: &mut Frame, app: &App) {
     frame.render_widget(header_line(app), header);
     match app.tab {
         0 => study_tab(frame, app, body),
+        1 if app.course.is_some() => course_board_tab(frame, app, body),
         1 => board_tab(frame, app, body),
+        _ if app.course.is_some() => course_brief_tab(frame, app, body),
         _ => brief_tab(frame, app, body),
     }
 
@@ -259,8 +350,13 @@ fn ui(frame: &mut Frame, app: &App) {
     )));
     frame.render_widget(status_line, status);
 
+    let footer_text = if app.course.is_some() {
+        app.locale.course_footer(app.tab)
+    } else {
+        app.locale.footer(app.tab)
+    };
     let hint = Paragraph::new(Line::from(Span::styled(
-        app.locale.footer(app.tab),
+        footer_text,
         Style::default().fg(Color::DarkGray),
     )));
     frame.render_widget(hint, footer);
@@ -287,13 +383,21 @@ fn header_line(app: &App) -> Paragraph<'static> {
         } else {
             Style::default().fg(Color::Gray)
         };
-        spans.push(Span::styled(format!(" {} ", app.locale.tab(i)), style));
+        let label = if app.course.is_some() {
+            app.locale.course_tab(i)
+        } else {
+            app.locale.tab(i)
+        };
+        spans.push(Span::styled(format!(" {label} "), style));
         spans.push(Span::raw(" "));
     }
-    spans.push(Span::styled(
-        app.locale.header(app.board.total(), secs),
-        Style::default().fg(Color::DarkGray),
-    ));
+    let summary = if let Some(c) = &app.course {
+        let p = CourseProgress::of(&app.deck);
+        app.locale.course_header(&c.subject, p.mastered, p.total)
+    } else {
+        app.locale.header(app.board.total(), secs)
+    };
+    spans.push(Span::styled(summary, Style::default().fg(Color::DarkGray)));
     Paragraph::new(Line::from(spans))
 }
 
@@ -533,6 +637,125 @@ fn empty(app: &App, tab: usize) -> Paragraph<'static> {
     .wrap(Wrap { trim: false })
 }
 
+fn course_board_tab(frame: &mut Frame, app: &App, area: Rect) {
+    if app.deck.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                app.locale.course_empty(),
+                Style::default().fg(Color::DarkGray),
+            )))
+            .block(Block::default().borders(Borders::ALL))
+            .wrap(Wrap { trim: false }),
+            area,
+        );
+        return;
+    }
+    let cols = course::columns(&app.deck);
+    let states = [WorkState::Todo, WorkState::Doing, WorkState::Done];
+    let areas = Layout::horizontal([Constraint::Ratio(1, 3); 3]).split(area);
+    for (i, bucket) in cols.iter().enumerate() {
+        let focused = i == app.col;
+        let items: Vec<ListItem> = bucket
+            .iter()
+            .map(|u| {
+                let head = Line::from(vec![
+                    Span::styled(
+                        format!("[{}] ", app.locale.stage(u.stage)),
+                        Style::default().fg(state_color(states[i])),
+                    ),
+                    Span::styled(
+                        truncate(&u.topic, 26),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    ),
+                ]);
+                let sub = Line::from(Span::styled(
+                    format!("  {}", truncate(&u.detail, 24)),
+                    Style::default().fg(Color::DarkGray),
+                ));
+                ListItem::new(Text::from(vec![head, sub]))
+            })
+            .collect();
+        let border = if focused { ACCENT } else { Color::DarkGray };
+        let title = format!(" {} ({}) ", app.locale.column(states[i]), bucket.len());
+        let list = List::new(items)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(border))
+                    .title(Span::styled(
+                        title,
+                        Style::default().fg(border).add_modifier(Modifier::BOLD),
+                    )),
+            )
+            .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        let mut state = ListState::default();
+        if focused && !bucket.is_empty() {
+            state.select(Some(app.rows[i].min(bucket.len() - 1)));
+        }
+        frame.render_stateful_widget(list, areas[i], &mut state);
+    }
+}
+
+fn course_brief_tab(frame: &mut Frame, app: &App, area: Rect) {
+    let p = CourseProgress::of(&app.deck);
+    let counts = app.deck.counts();
+    let subject = app
+        .course
+        .as_ref()
+        .map(|c| c.subject.clone())
+        .unwrap_or_default();
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(
+                format!(" {subject}  "),
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(bar(p.pct()), Style::default().fg(ACCENT)),
+            Span::raw(format!("  {}% · {}/{} 掌握", p.pct(), p.mastered, p.total)),
+        ]),
+        Line::raw(""),
+    ];
+    for s in LoopStage::ALL {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  {:<8}", app.locale.stage(s)),
+                Style::default().fg(ACCENT),
+            ),
+            Span::styled(
+                format!("{:<14}", app.locale.stage_saying(s)),
+                Style::default().fg(Color::Gray),
+            ),
+            Span::raw(format!("{}", counts[s.index()])),
+        ]));
+    }
+    lines.push(Line::raw(""));
+    let now = app.tutor.now();
+    lines.push(Line::from(Span::styled(
+        format!(" {} ", app.locale.study_due()),
+        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+    )));
+    for u in app.deck.due(now).into_iter().take(8) {
+        lines.push(Line::from(vec![
+            Span::raw("  • "),
+            Span::styled(
+                format!("[{}] ", app.locale.stage(u.stage)),
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::styled(truncate(&u.topic, 48), Style::default().fg(Color::White)),
+        ]));
+    }
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(format!(" {} ", app.locale.tab(2))),
+            )
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -613,7 +836,7 @@ mod tests {
         let store = MemStore;
         let brain = NoBrain;
         let tutor = Tutor::new(&src, &clock);
-        let mut app = App::new(&tutor, &store, &brain, Locale::Zh).unwrap();
+        let mut app = App::new(&tutor, &store, &brain, Locale::Zh, None).unwrap();
         app.tab = tab;
         let mut term = Terminal::new(TestBackend::new(120, 30)).unwrap();
         term.draw(|f| ui(f, &app)).unwrap();
@@ -646,5 +869,42 @@ mod tests {
         let cjk: String = s.chars().filter(|c| !c.is_whitespace()).collect();
         assert!(cjk.contains("快报"));
         assert!(cjk.contains("今日进行"));
+    }
+
+    #[test]
+    fn course_mode_renders_kanban_from_roadmap() {
+        // A course dir with a hand-written roadmap.
+        let dir = std::env::temp_dir().join(format!("tutor-course-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("roadmap.md"),
+            "# Algorithms — roadmap\n## Arrays\n- [ ] Two Sum\n- [x] Contains Duplicate\n",
+        )
+        .unwrap();
+
+        let src = FakeSource(vec![]);
+        let clock = FixedClock(SystemTime::UNIX_EPOCH + Duration::from_secs(2_000_000));
+        let store = MemStore;
+        let brain = NoBrain;
+        let tutor = Tutor::new(&src, &clock);
+        let ctx = CourseCtx {
+            dir: dir.clone(),
+            subject: "Algorithms".into(),
+        };
+        let mut app = App::new(&tutor, &store, &brain, Locale::Zh, Some(ctx)).unwrap();
+
+        // Deck seeded from the roadmap: one Preview (todo), one Correct (done).
+        assert_eq!(app.deck.cards.len(), 2);
+        app.tab = 1; // course kanban
+        let mut term = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        term.draw(|f| ui(f, &app)).unwrap();
+        let s = buffer_string(&term);
+        let cjk: String = s.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(cjk.contains("待办")); // To do column
+        assert!(cjk.contains("已完成")); // Done column
+        assert!(s.contains("Two Sum"));
+        assert!(cjk.contains("Algorithms") || s.contains("Algorithms")); // header subject
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

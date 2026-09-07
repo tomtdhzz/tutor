@@ -69,6 +69,33 @@ A rolled-up account of the day — what moved, what finished, what is waiting on
 review — as structured facts, optionally narrated into prose by `omp -p`, and exportable as
 Markdown.
 
+## Courses — point the tutor at a subject
+
+Give the tutor an empty folder and a subject and it drafts a **learning roadmap**
+(grounded on well-known public paths — NeetCode / roadmap.sh / LeetCode patterns for
+algorithms) into an editable `roadmap.md`, then opens a **course kanban** you drive by
+hand. Each roadmap topic is a card moving through Preview → Class → Homework → Review →
+Correct; `- [x]` in `roadmap.md` marks a topic mastered, and `- [ ]` never resets your
+progress. The course is self-contained in its folder (`roadmap.md` + `.tutor/deck.json`),
+so it's git-friendly and portable.
+
+```bash
+# Draft an algorithms roadmap into ./algo and seed the course
+tutor course new ./algo --subject "algorithms"
+
+# (edit ./algo/roadmap.md — reorder, add, check off `- [x]` what you already know)
+
+# Open the interactive course dashboard (Review / Course / Progress tabs)
+tutor course ./algo
+
+# Or print the course kanban once
+tutor course board ./algo
+```
+
+In the course dashboard: `←→`/`↑↓` pick a card, `.` advance a stage, `,` step back,
+`space` mark reviewed (schedules the next spaced review), `r` reloads roadmap edits.
+Offline? `tutor course new … --no-llm` writes a starter roadmap you fill in yourself.
+
 ## Prerequisites
 
 Platforms: macOS or Linux.

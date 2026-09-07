@@ -4,10 +4,12 @@
 //! JSON, files, or terminals — those live in `adapters`/`delivery`.
 
 pub mod briefing;
+pub mod course;
 pub mod pane;
 pub mod study;
 
 pub use briefing::DailyBriefing;
+pub use course::{CourseProgress, Syllabus, Topic};
 pub use pane::{Activity, Board, Column, Lifecycle, Progress, WorkItem, WorkState};
 pub use study::{LoopStage, StudyDeck, Unknown};
 

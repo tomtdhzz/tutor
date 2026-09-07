@@ -124,6 +124,19 @@ impl<'a> Tutor<'a> {
         DailyBriefing::compose(board, deck, self.now(), BRIEFING_WINDOW)
     }
 
+    /// Draft a learning roadmap for a subject via the LLM, grounded on well-known
+    /// public paths. Returns editable Markdown (title, sections, `- [ ]` topics).
+    pub fn generate_roadmap(&self, summarizer: &dyn Summarizer, subject: &str) -> Result<String> {
+        let md = summarizer
+            .run(&crate::domain::course::roadmap_prompt(subject))
+            .context("roadmap generator call failed")?;
+        // Trust but sanity-check: it must contain at least one topic bullet.
+        if !md.contains("- [") {
+            anyhow::bail!("model did not return a roadmap in the expected Markdown shape");
+        }
+        Ok(md.trim().to_string())
+    }
+
     /// Attach LLM-written narration to a briefing.
     pub fn narrate(
         &self,

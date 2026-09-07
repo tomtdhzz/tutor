@@ -3,6 +3,7 @@
 //! domain/app layers never know which is in use.
 
 pub mod cli;
+pub mod course;
 pub mod i18n;
 pub mod tui;
 
