@@ -157,6 +157,53 @@ impl CourseProgress {
     }
 }
 
+/// Whether `path` is `base` or lives beneath it. Both should be canonicalized by
+/// the caller; comparison is a boundary-aware string prefix.
+pub fn is_under(path: &str, base: &str) -> bool {
+    let p = path.trim_end_matches('/');
+    let b = base.trim_end_matches('/');
+    !b.is_empty() && (p == b || p.starts_with(&format!("{b}/")))
+}
+
+/// Distinctive tokens of a topic title: alphanumeric words of >=5 chars,
+/// lowercased. Used to match a topic against session/file signals.
+pub fn topic_tokens(title: &str) -> Vec<String> {
+    title
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.chars().count() >= 5)
+        .map(|w| w.to_lowercase())
+        .collect()
+}
+
+/// Auto-advance roadmap topics you've started touching: a `Preview` card whose
+/// project matches `subject` (i.e. a roadmap topic, not a session-mined cue) and
+/// any of whose distinctive tokens appears in a signal is promoted one stage
+/// (→ Class). Conservative by design: it never advances past Class and never
+/// downgrades, so mastery stays a deliberate act (`- [x]` or the `.` key).
+/// Signals must be lowercased by the caller. Returns the number advanced.
+pub fn advance_roadmap(
+    deck: &mut StudyDeck,
+    subject: &str,
+    signals: &[String],
+    now: SystemTime,
+) -> usize {
+    let mut advanced = 0;
+    for card in deck.cards.iter_mut() {
+        if card.project != subject || card.stage != LoopStage::Preview {
+            continue;
+        }
+        let tokens = topic_tokens(&card.topic);
+        let touched = tokens
+            .iter()
+            .any(|tok| signals.iter().any(|s| s.contains(tok)));
+        if touched {
+            card.promote(now); // Preview -> Class
+            advanced += 1;
+        }
+    }
+    advanced
+}
+
 /// The prompt handed to `omp -p` to draft a roadmap, grounded on public paths.
 pub fn roadmap_prompt(subject: &str) -> String {
     format!(
@@ -255,5 +302,63 @@ mod tests {
         assert_eq!(doing.len(), 0);
         assert_eq!(done.len(), 1); // Contains Duplicate
         assert_eq!(CourseProgress::of(&deck).pct(), 25);
+    }
+
+    #[test]
+    fn is_under_respects_boundaries() {
+        assert!(is_under("/a/b/algo", "/a/b/algo"));
+        assert!(is_under("/a/b/algo/sub", "/a/b/algo"));
+        assert!(!is_under("/a/b/algorithms", "/a/b/algo")); // not a path boundary
+        assert!(!is_under("/a/b", "/a/b/algo"));
+        assert!(!is_under("/a/b/algo", ""));
+    }
+
+    #[test]
+    fn topic_tokens_extracts_significant_words() {
+        assert_eq!(
+            topic_tokens("Recursion and call stack"),
+            vec!["recursion", "stack"]
+        );
+        assert_eq!(topic_tokens("Big-O, big-Θ notation"), vec!["notation"]);
+        assert!(topic_tokens("A x y").is_empty()); // nothing >= 5 chars
+    }
+
+    #[test]
+    fn advance_only_touched_roadmap_previews() {
+        let s = Syllabus::parse(MD, "algorithms");
+        let mut deck = StudyDeck::default();
+        s.merge_into(&mut deck, t());
+        // A session-mined cue card (different project) must never be advanced here.
+        deck.upsert(Unknown::seed(
+            "panic somewhere",
+            "d",
+            "you2php",
+            LoopStage::Preview,
+            t(),
+        ));
+        let signals = vec!["i was working on valid palindrome today".to_string()];
+        let n = advance_roadmap(&mut deck, &s.subject, &signals, t());
+        assert_eq!(n, 1); // "Valid Palindrome" (roadmap, Preview) → Class
+        assert_eq!(
+            deck.get_mut(&crate::domain::study::normalize_id("Valid Palindrome"))
+                .unwrap()
+                .stage,
+            LoopStage::Class
+        );
+        // untouched roadmap topic stays Preview; the cue card stays Preview
+        assert_eq!(
+            deck.get_mut(&crate::domain::study::normalize_id(
+                "Two Sum (hashmap complement)"
+            ))
+            .unwrap()
+            .stage,
+            LoopStage::Preview
+        );
+        assert_eq!(
+            deck.get_mut(&crate::domain::study::normalize_id("panic somewhere"))
+                .unwrap()
+                .stage,
+            LoopStage::Preview
+        );
     }
 }

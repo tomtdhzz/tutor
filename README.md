@@ -96,6 +96,13 @@ In the course dashboard: `←→`/`↑↓` pick a card, `.` advance a stage, `,`
 `space` mark reviewed (schedules the next spaced review), `r` reloads roadmap edits.
 Offline? `tutor course new … --no-llm` writes a starter roadmap you fill in yourself.
 
+**It closes the loop with your sessions.** Any omp session whose cwd is inside the
+course folder is folded in: the "things you don't know" it surfaces (your questions,
+the errors you hit) join the deck as extra cards, and a roadmap topic you've started
+touching — named in a session or a file in the folder (e.g. `recursion_solver.py`) —
+auto-advances Preview → Class. So the roadmap says what you *should* know; your sessions
+reveal what you *don't* yet; mastery still stays a deliberate act (`- [x]` or `.`).
+
 ## Prerequisites
 
 Platforms: macOS or Linux.

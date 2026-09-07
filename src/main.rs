@@ -221,7 +221,7 @@ fn run(args: Args) -> Result<()> {
                     };
                     course_cli::init(&course, &subject, &md, &clock)
                 }
-                CourseAct::Board => course_cli::board(&course, &clock, args.locale),
+                CourseAct::Board => course_cli::board(&tutor, &course, args.locale),
                 CourseAct::Open => {
                     if !course.exists() {
                         anyhow::bail!(

@@ -98,12 +98,13 @@ impl<'a> App<'a> {
     /// edited) roadmap, persist. In window mode: re-scan omp and reseed heuristics.
     fn refresh(&mut self) -> Result<()> {
         if let Some(c) = &self.course {
-            let mut deck = self.store.load().unwrap_or_default();
-            if let Ok(md) = std::fs::read_to_string(c.dir.join("roadmap.md")) {
-                course::Syllabus::parse(&md, &c.subject).merge_into(&mut deck, self.tutor.now());
-            }
-            let _ = self.store.save(&deck);
-            self.deck = deck;
+            let base = self.store.load().unwrap_or_default();
+            let md = std::fs::read_to_string(c.dir.join("roadmap.md")).unwrap_or_default();
+            let signals = super::dir_signals(&c.dir);
+            self.deck = self
+                .tutor
+                .reconcile_course(&c.dir, &c.subject, &md, base, &signals);
+            let _ = self.store.save(&self.deck);
         } else {
             self.scans = self.tutor.scan()?;
             self.board = self.tutor.board(&self.scans);

@@ -6,7 +6,7 @@ use anyhow::Result;
 use super::bar;
 use super::i18n::Locale;
 use crate::adapters::CourseDir;
-use crate::app::{Clock, DeckStore};
+use crate::app::{Clock, DeckStore, Tutor};
 use crate::domain::{course, CourseProgress, StudyDeck, WorkState};
 
 /// Write the roadmap into `<dir>/roadmap.md` and seed `<dir>/.tutor/deck.json`.
@@ -29,7 +29,7 @@ pub fn init(course: &CourseDir, subject: &str, roadmap_md: &str, clock: &dyn Clo
 }
 
 /// Load the course, re-merge any roadmap edits, and print the kanban.
-pub fn board(course: &CourseDir, clock: &dyn Clock, locale: Locale) -> Result<()> {
+pub fn board(tutor: &Tutor, course: &CourseDir, locale: Locale) -> Result<()> {
     if !course.exists() {
         anyhow::bail!(
             "no course in {} — create one with: tutor course new \"{}\" --subject \"<subject>\"",
@@ -38,12 +38,12 @@ pub fn board(course: &CourseDir, clock: &dyn Clock, locale: Locale) -> Result<()
         );
     }
     let store = course.deck_store()?;
-    let mut deck = store.load().unwrap_or_default();
-    if let Some(md) = course.read_roadmap()? {
-        let subject = course::Syllabus::parse(&md, "").subject;
-        course::Syllabus::parse(&md, &subject).merge_into(&mut deck, clock.now());
-        store.save(&deck)?;
-    }
+    let base = store.load().unwrap_or_default();
+    let md = course.read_roadmap()?.unwrap_or_default();
+    let subject = course::Syllabus::parse(&md, "").subject;
+    let signals = super::dir_signals(course.dir());
+    let deck = tutor.reconcile_course(course.dir(), &subject, &md, base, &signals);
+    store.save(&deck)?;
     print!("{}", render(&deck, locale));
     Ok(())
 }

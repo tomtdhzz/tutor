@@ -9,6 +9,27 @@ pub mod tui;
 
 pub use i18n::Locale;
 
+/// Lowercased signals from a course folder's top-level entries (filenames with
+/// separators flattened to spaces), used to auto-advance roadmap topics you've
+/// started working on as files. Best-effort: unreadable dirs yield nothing.
+pub(crate) fn dir_signals(dir: &std::path::Path) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') {
+                continue;
+            }
+            let stem = std::path::Path::new(&name)
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or(name);
+            out.push(stem.replace(['_', '-', '.'], " ").to_lowercase());
+        }
+    }
+    out
+}
+
 /// Width of the unicode progress gauge, in cells.
 pub(crate) const BAR_WIDTH: usize = 14;
 

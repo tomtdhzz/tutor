@@ -192,3 +192,60 @@ fn cli_board_renders_fixture_end_to_end() {
 
     let _ = fs::remove_dir_all(&root);
 }
+
+#[test]
+fn course_folds_in_sessions_and_advances_topics() {
+    // A course folder with a roadmap of two topics.
+    let uniq = format!("tutor-course-it-{}", std::process::id());
+    let base = std::env::temp_dir().join(uniq);
+    let course_dir = base.join("algo");
+    fs::create_dir_all(&course_dir).unwrap();
+    fs::write(
+        course_dir.join("roadmap.md"),
+        "# algorithms\n## Patterns\n- [ ] Sliding window technique\n- [ ] Binary search\n",
+    )
+    .unwrap();
+    let course_canon = fs::canonicalize(&course_dir).unwrap();
+
+    // A fixture omp store with one session whose cwd IS the course folder.
+    let omp = base.join("omp");
+    let bucket = omp.join("sessions").join("-algo");
+    fs::create_dir_all(&bucket).unwrap();
+    let ts = "2026-09-07T00:00:00.000Z";
+    let title = r#"{"type":"title","title":"Debugging sliding window"}"#;
+    let header = format!(
+        r#"{{"type":"session","version":3,"id":"c1","timestamp":"{ts}","cwd":"{}","title":"Debugging sliding window"}}"#,
+        course_canon.display()
+    );
+    let msg = format!(
+        r#"{{"type":"message","id":"m1","timestamp":"{ts}","message":{{"role":"user","content":[{{"type":"text","text":"为什么 sliding window 会报错"}}],"timestamp":{T0_MS}}}}}"#
+    );
+    let session = format!("{title}\n{header}\n{msg}\n");
+    fs::write(bucket.join("2026-09-07T00-00-00-000Z_c1.jsonl"), session).unwrap();
+
+    let source = OmpSessions::with_root(&omp);
+    let clock = FixedClock(UNIX_EPOCH + Duration::from_millis(T0_MS + 3_600_000));
+    let tutor = Tutor::new(&source, &clock);
+
+    let md = fs::read_to_string(course_dir.join("roadmap.md")).unwrap();
+    let deck = tutor.reconcile_course(&course_dir, "algorithms", &md, Default::default(), &[]);
+
+    // The session touched "sliding window" → that topic advanced to Class.
+    let sliding = deck
+        .cards
+        .iter()
+        .find(|c| c.topic == "Sliding window technique")
+        .expect("sliding topic present");
+    assert_eq!(sliding.stage, LoopStage::Class);
+    // The untouched topic stays Preview.
+    let binary = deck
+        .cards
+        .iter()
+        .find(|c| c.topic == "Binary search")
+        .unwrap();
+    assert_eq!(binary.stage, LoopStage::Preview);
+    // The session's cue ("报错") was mined into an extra card (project != subject).
+    assert!(deck.cards.iter().any(|c| c.project != "algorithms"));
+
+    let _ = fs::remove_dir_all(&base);
+}

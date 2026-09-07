@@ -4,6 +4,7 @@
 //! Everything works with zero LLM calls (rule-based). The `Summarizer` port only
 //! *enriches*: it distills better study cards and narrates the briefing prose.
 
+use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result};
@@ -137,6 +138,56 @@ impl<'a> Tutor<'a> {
         Ok(md.trim().to_string())
     }
 
+    /// Reconcile a subject course from all its inputs, returning the updated deck:
+    /// 1. merge the (hand-editable) roadmap Markdown — `- [x]` marks mastered;
+    /// 2. fold in "things you don't know" mined from omp sessions whose cwd lives
+    ///    under `dir` (they join as extra Preview cards);
+    /// 3. auto-advance roadmap topics you've started touching, matched against
+    ///    session text plus any `file_signals` the caller supplies (dir filenames).
+    ///
+    /// Rule-based; no LLM. `file_signals` should already be lowercased.
+    pub fn reconcile_course(
+        &self,
+        dir: &Path,
+        subject: &str,
+        roadmap_md: &str,
+        base: StudyDeck,
+        file_signals: &[String],
+    ) -> StudyDeck {
+        use crate::domain::course;
+        let now = self.now();
+        let mut deck = base;
+        // The roadmap title may set the canonical subject; use it for both the
+        // seeded cards' project and the advance filter so they always agree.
+        let syllabus = course::Syllabus::parse(roadmap_md, subject);
+        let subject = syllabus.subject.clone();
+        syllabus.merge_into(&mut deck, now);
+
+        let base_dir = canonical_str(&dir.to_string_lossy());
+        let under: Vec<ScannedSession> = self
+            .source
+            .collect()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|s| course::is_under(&canonical_str(&s.cwd), &base_dir))
+            .collect();
+
+        // Session-mined unknowns become extra Preview cards on the course.
+        deck = self.seed_heuristic(&under, deck);
+
+        // Signals for auto-advancing roadmap topics: session titles/prompts/cues.
+        let mut signals: Vec<String> = file_signals.to_vec();
+        for s in &under {
+            signals.push(s.title.to_lowercase());
+            signals.push(s.first_prompt.to_lowercase());
+            for sn in &s.snippets {
+                signals.push(sn.text.to_lowercase());
+            }
+        }
+        course::advance_roadmap(&mut deck, &subject, &signals, now);
+        deck
+    }
+
     /// Attach LLM-written narration to a briefing.
     pub fn narrate(
         &self,
@@ -156,6 +207,14 @@ impl<'a> Tutor<'a> {
         }
         Ok(())
     }
+}
+
+/// Best-effort path canonicalization to a string; falls back to the input when
+/// the path does not resolve (e.g. a recorded cwd that no longer exists).
+fn canonical_str(path: &str) -> String {
+    std::fs::canonicalize(path)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| path.trim_end_matches('/').to_string())
 }
 
 fn to_item(s: &ScannedSession) -> WorkItem {
