@@ -1,5 +1,7 @@
 # tutor
 
+[![CI](https://github.com/tomtdhzz/tutor/actions/workflows/ci.yml/badge.svg)](https://github.com/tomtdhzz/tutor/actions/workflows/ci.yml)
+
 **Your local omp tutor: it turns the "things you don't know" scattered across your coding sessions into a course with a review schedule — and keeps an eye on every window and files you a daily briefing.**
 
 [English](README.md) · [简体中文](README.zh-CN.md)

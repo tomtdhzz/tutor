@@ -1,5 +1,7 @@
 # tutor
 
+[![CI](https://github.com/tomtdhzz/tutor/actions/workflows/ci.yml/badge.svg)](https://github.com/tomtdhzz/tutor/actions/workflows/ci.yml)
+
 **你的本地 omp 私人教师：把散落在会话里的"不会的"收成一门有复习节奏的课，顺带盯住每个窗口的进度，每天给你一份快报。**
 
 [English](README.md) · [简体中文](README.zh-CN.md)
