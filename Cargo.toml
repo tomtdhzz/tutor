@@ -30,3 +30,8 @@ crossterm = "0.28"
 opt-level = "z"
 lto = true
 strip = true
+
+# The profile that 'dist' (cargo-dist) builds release artifacts with.
+[profile.dist]
+inherits = "release"
+lto = "thin"
