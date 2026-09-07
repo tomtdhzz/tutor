@@ -1,9 +1,9 @@
 [package]
 name = "tutor"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.88"
-description = "Local omp tutor: per-window work board, auto-mined study loop, and a daily briefing (reads omp sessions, brains via omp -p)"
+description = "Local omp tutor: an auto-mined study loop, subject courses (LLM-drafted roadmaps), a per-window work board, and a daily briefing"
 license = "MIT"
 readme = "README.md"
 keywords = ["omp", "dashboard", "tui", "kanban", "productivity"]
