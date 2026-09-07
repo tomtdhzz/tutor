@@ -4,6 +4,10 @@
 
 [English](README.md) · [简体中文](README.zh-CN.md)
 
+`● tutor`  ·  **PREVIEW › CLASS › HOMEWORK › REVIEW › CORRECT**  ·  read-only
+
+**headroom** (quota) × **tutor** (learning) × **omp** (the agent)
+
 You learn by doing: you run [`omp`](https://github.com/can1357/oh-my-pi) across many
 terminal tabs, ask it questions, hit errors, and move on. The problem is that the *things
 you didn't know* evaporate — no one collects them, and nothing brings them back for review.
