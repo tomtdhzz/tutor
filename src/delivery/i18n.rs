@@ -239,4 +239,34 @@ impl Locale {
             Locale::En => "No roadmap yet. Edit roadmap.md and press r to reload.",
         }
     }
+
+    /// Title of the dated review agenda (复习计划).
+    pub fn review_plan(self) -> &'static str {
+        match self {
+            Locale::Zh => "复习计划",
+            Locale::En => "Review plan",
+        }
+    }
+
+    /// Bucket label: 0 overdue, 1 today, 2 this week, 3 later.
+    pub fn review_bucket(self, which: usize) -> &'static str {
+        match (self, which) {
+            (Locale::Zh, 0) => "逾期",
+            (Locale::Zh, 1) => "今天",
+            (Locale::Zh, 2) => "本周",
+            (Locale::Zh, _) => "以后",
+            (Locale::En, 0) => "Overdue",
+            (Locale::En, 1) => "Today",
+            (Locale::En, 2) => "This week",
+            (Locale::En, _) => "Later",
+        }
+    }
+
+    /// "empty" note for the review agenda when nothing has reached Review yet.
+    pub fn review_plan_empty(self) -> &'static str {
+        match self {
+            Locale::Zh => "暂无复习项 — 把话题推进到\"复习\"阶段后会自动排期。",
+            Locale::En => "No reviews scheduled — walk a topic into Review to populate this.",
+        }
+    }
 }

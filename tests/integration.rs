@@ -33,6 +33,13 @@ fn now_clock() -> FixedClock {
 ///   <root>/terminal-sessions/ttyTEST      (line1 cwd, line2 session path)
 ///   <root>/sessions/-proj-acme/<file>.jsonl
 fn build_fixture() -> PathBuf {
+    build_fixture_at(T0_MS)
+}
+
+/// Like [`build_fixture`] but stamps every entry at `ms` (epoch-ms). The e2e
+/// binary test uses the real `SystemClock`, so it must build a fixture that is
+/// recent relative to *now*, not a fixed calendar date.
+fn build_fixture_at(ms: u64) -> PathBuf {
     let uniq = format!(
         "tutor-it-{}-{}",
         std::process::id(),
@@ -47,18 +54,18 @@ fn build_fixture() -> PathBuf {
     fs::create_dir_all(&bucket).unwrap();
     fs::create_dir_all(&crumbs).unwrap();
 
-    let session_path = bucket.join("2026-09-07T00-00-00-000Z_abc123.jsonl");
-    let ts = "2026-09-07T00:00:00.000Z";
+    let ts = iso_ms(ms);
+    let session_path = bucket.join(format!("{}_abc123.jsonl", ts.replace([':', '.'], "-")));
     let lines = [
         r#"{"type":"title","v":1,"title":"Ship the parser","source":"auto"}"#.to_string(),
         format!(
             r#"{{"type":"session","version":3,"id":"abc123","timestamp":"{ts}","cwd":"/proj/acme","title":"Ship the parser"}}"#
         ),
         format!(
-            r#"{{"type":"message","id":"m1","timestamp":"{ts}","message":{{"role":"user","content":[{{"type":"text","text":"为什么会 panic 在这里"}}],"timestamp":{T0_MS}}}}}"#
+            r#"{{"type":"message","id":"m1","timestamp":"{ts}","message":{{"role":"user","content":[{{"type":"text","text":"为什么会 panic 在这里"}}],"timestamp":{ms}}}}}"#
         ),
         format!(
-            r#"{{"type":"message","id":"m2","timestamp":"{ts}","message":{{"role":"user","content":"thanks looks good","timestamp":{T0_MS}}}}}"#
+            r#"{{"type":"message","id":"m2","timestamp":"{ts}","message":{{"role":"user","content":"thanks looks good","timestamp":{ms}}}}}"#
         ),
         format!(
             r#"{{"type":"custom","id":"c1","timestamp":"{ts}","customType":"user_todo_edit","data":{{"phases":[{{"items":[{{"status":"completed"}},{{"status":"in_progress"}},{{"status":"pending"}}]}}]}}}}"#
@@ -83,6 +90,32 @@ fn build_fixture() -> PathBuf {
     .unwrap();
 
     root
+}
+
+/// Format epoch-ms as `YYYY-MM-DDTHH:MM:SS.mmmZ` (UTC), matching omp's JSONL.
+fn iso_ms(ms: u64) -> String {
+    let secs = (ms / 1000) as i64;
+    let millis = ms % 1000;
+    let (h, m, s) = {
+        let sod = secs.rem_euclid(86_400);
+        (sod / 3600, (sod % 3600) / 60, sod % 60)
+    };
+    let (y, mo, d) = civil_from_days(secs.div_euclid(86_400));
+    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{m:02}:{s:02}.{millis:03}Z")
+}
+
+/// Howard Hinnant's civil-from-days (days since 1970-01-01) → (year, month, day).
+fn civil_from_days(z: i64) -> (i64, i64, i64) {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
 #[test]
@@ -154,7 +187,14 @@ fn pipeline_builds_board_study_and_briefing() {
 
 #[test]
 fn cli_board_renders_fixture_end_to_end() {
-    let root = build_fixture();
+    // The binary runs under the real system clock, so the fixture must be recent
+    // (within the briefing's 24h window) — stamp it one hour ago.
+    let recent_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+        - 3_600_000;
+    let root = build_fixture_at(recent_ms);
     let bin = env!("CARGO_BIN_EXE_tutor");
 
     let out = Command::new(bin)

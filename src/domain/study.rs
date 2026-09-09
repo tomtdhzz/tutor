@@ -239,6 +239,74 @@ impl StudyDeck {
     }
 }
 
+/// One entry on the dated review agenda: a Review-stage card and how many whole
+/// days remain until its next spaced review (negative = overdue).
+#[derive(Clone, Copy, Debug)]
+pub struct ReviewEntry<'a> {
+    pub card: &'a Unknown,
+    pub days_until: i64,
+}
+
+/// The spaced-repetition agenda (复习计划), bucketed by due date. Consolidation
+/// (沉淀) lives in the Review stage, so only Review-stage cards carry a real
+/// schedule and only they appear here — a fresh course has an empty plan until a
+/// topic is walked into Review.
+#[derive(Clone, Debug, Default)]
+pub struct ReviewPlan<'a> {
+    pub overdue: Vec<ReviewEntry<'a>>,
+    pub today: Vec<ReviewEntry<'a>>,
+    pub week: Vec<ReviewEntry<'a>>,
+    pub later: Vec<ReviewEntry<'a>>,
+}
+
+impl<'a> ReviewPlan<'a> {
+    /// Bucket every Review-stage card by whole days until its next review.
+    pub fn of(deck: &'a StudyDeck, now: SystemTime) -> ReviewPlan<'a> {
+        let mut plan = ReviewPlan::default();
+        let mut entries: Vec<ReviewEntry<'a>> = deck
+            .cards
+            .iter()
+            .filter(|c| c.stage == LoopStage::Review)
+            .map(|c| ReviewEntry {
+                card: c,
+                days_until: days_between(now, c.next_review),
+            })
+            .collect();
+        entries.sort_by_key(|e| (e.days_until, std::cmp::Reverse(e.card.last_seen)));
+        for e in entries {
+            match e.days_until {
+                d if d < 0 => plan.overdue.push(e),
+                0 => plan.today.push(e),
+                1..=7 => plan.week.push(e),
+                _ => plan.later.push(e),
+            }
+        }
+        plan
+    }
+
+    pub fn total(&self) -> usize {
+        self.overdue.len() + self.today.len() + self.week.len() + self.later.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.total() == 0
+    }
+}
+
+/// Whole calendar days from `now`'s date to `then`'s date (UTC epoch-day basis).
+/// Date-based (not raw seconds) so it matches the `YYYY-MM-DD` shown in
+/// `course state` and is stable across sub-second drift between processes: a
+/// review scheduled for tomorrow always reads `1`, an instant earlier today `0`,
+/// and yesterday `-1`.
+pub fn days_between(now: SystemTime, then: SystemTime) -> i64 {
+    fn epoch_day(t: SystemTime) -> i64 {
+        t.duration_since(std::time::UNIX_EPOCH)
+            .map(|d| (d.as_secs() / 86_400) as i64)
+            .unwrap_or(0)
+    }
+    epoch_day(then) - epoch_day(now)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -320,5 +388,57 @@ mod tests {
         let c = deck.counts();
         assert_eq!(c[LoopStage::Preview.index()], 1);
         assert_eq!(c[LoopStage::Review.index()], 2);
+    }
+
+    #[test]
+    fn days_between_is_calendar_based() {
+        let day = 86_400;
+        assert_eq!(days_between(t(0), t(0)), 0);
+        assert_eq!(days_between(t(0), t(day + 3600)), 1); // tomorrow, +1h → 1
+        assert_eq!(days_between(t(day), t(0)), -1); // yesterday
+        assert_eq!(days_between(t(3600), t(day - 60)), 0); // same UTC day → 0
+    }
+
+    #[test]
+    fn review_plan_buckets_only_review_cards_by_due_date() {
+        let day = 86_400;
+        let now = t(30 * day); // day 30
+        let mut deck = StudyDeck::default();
+        // Not in Review → excluded from the plan.
+        deck.upsert(Unknown::seed("preview", "", "p", LoopStage::Preview, now));
+        deck.upsert(Unknown::seed("homework", "", "p", LoopStage::Homework, now));
+        // Review cards with hand-set next_review dates.
+        let mut over = Unknown::seed("overdue", "", "p", LoopStage::Review, now);
+        over.next_review = t(29 * day); // yesterday
+        deck.upsert(over);
+        let mut today = Unknown::seed("today", "", "p", LoopStage::Review, now);
+        today.next_review = t(30 * day + 3600); // later today
+        deck.upsert(today);
+        let mut week = Unknown::seed("week", "", "p", LoopStage::Review, now);
+        week.next_review = t(33 * day); // +3d
+        deck.upsert(week);
+        let mut later = Unknown::seed("later", "", "p", LoopStage::Review, now);
+        later.next_review = t(60 * day); // +30d
+        deck.upsert(later);
+
+        let plan = ReviewPlan::of(&deck, now);
+        assert_eq!(plan.total(), 4); // preview/homework excluded
+        assert_eq!(plan.overdue.len(), 1);
+        assert_eq!(plan.overdue[0].card.topic, "overdue");
+        assert_eq!(plan.overdue[0].days_until, -1);
+        assert_eq!(plan.today.len(), 1);
+        assert_eq!(plan.today[0].days_until, 0);
+        assert_eq!(plan.week.len(), 1);
+        assert_eq!(plan.week[0].days_until, 3);
+        assert_eq!(plan.later.len(), 1);
+        assert_eq!(plan.later[0].days_until, 30);
+    }
+
+    #[test]
+    fn empty_review_plan_when_nothing_reached_review() {
+        let mut deck = StudyDeck::default();
+        deck.upsert(Unknown::seed("a", "", "p", LoopStage::Preview, t(0)));
+        deck.upsert(Unknown::seed("b", "", "p", LoopStage::Class, t(0)));
+        assert!(ReviewPlan::of(&deck, t(0)).is_empty());
     }
 }

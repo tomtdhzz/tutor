@@ -96,6 +96,22 @@ In the course dashboard: `←→`/`↑↓` pick a card, `.` advance a stage, `,`
 `space` mark reviewed (schedules the next spaced review), `r` reloads roadmap edits.
 Offline? `tutor course new … --no-llm` writes a starter roadmap you fill in yourself.
 
+**Scriptable & observable (no TUI needed).** Every stage action has a one-shot
+command, and `course state` prints the whole course — progress, per-stage counts,
+and a dated **review plan** (复习计划) — as text or `--json`, so you (or a script)
+can drive and verify the loop without the full-screen dashboard:
+
+```bash
+tutor course state ./algo                 # human-readable state + review plan
+tutor course state ./algo --json          # machine-readable (stable schema)
+tutor course advance ./algo --topic "binary search"   # one stage toward mastery
+tutor course demote  ./algo --topic "binary search"   # one stage back
+tutor course review  ./algo --topic "binary search"   # record a spaced review
+```
+
+A topic only joins the review plan once it reaches **Review**; each `review`
+pushes its next date out on the 1·3·7·14·30-day ladder, and mastery drops it off.
+
 **It closes the loop with your sessions.** Any omp session whose cwd is inside the
 course folder is folded in: the "things you don't know" it surfaces (your questions,
 the errors you hit) join the deck as extra cards, and a roadmap topic you've started

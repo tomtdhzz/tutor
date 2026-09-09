@@ -77,6 +77,17 @@ pub(crate) fn today_local() -> String {
     format!("{y:04}-{m:02}-{d:02}")
 }
 
+/// Local calendar date `YYYY-MM-DD` for an arbitrary instant (UTC-based, so it is
+/// stable and IO-free — used for review-plan dates in `course state`).
+pub(crate) fn date_of(t: std::time::SystemTime) -> String {
+    let secs = t
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let (y, m, d) = civil_from_days(secs.div_euclid(86_400));
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
 /// Inverse of `days_from_civil` (Howard Hinnant).
 fn civil_from_days(z: i64) -> (i64, i64, i64) {
     let z = z + 719_468;

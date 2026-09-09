@@ -80,6 +80,21 @@ tutor course board ./algo
 课程仪表盘里:`←→`/`↑↓` 选卡,`.` 进阶,`,` 退阶,`空格` 标记已复习(排下一次间隔复习),`r` 重载路线改动。
 离线?`tutor course new … --no-llm` 会写一份 starter 路线让你自己填。
 
+**可脚本化、可观察(不必开 TUI)。** 每个阶段动作都有一次性命令,`course state`
+把整门课——进度、各阶段计数、带日期的**复习计划**——以文本或 `--json` 打印出来,
+你(或脚本)无需全屏仪表盘即可推进并验证学习闭环:
+
+```bash
+tutor course state ./algo                 # 人读:状态 + 复习计划
+tutor course state ./algo --json          # 机读:结构稳定
+tutor course advance ./algo --topic "binary search"   # 向掌握推进一阶
+tutor course demote  ./algo --topic "binary search"   # 退回一阶
+tutor course review  ./algo --topic "binary search"   # 记一次间隔复习
+```
+
+Topic 只有进入**复习**阶段才会进入复习计划;每次 `review` 按 1·3·7·14·30 天阶梯把
+下次日期往后推,掌握(改错)后自动移出计划。
+
 **它用你的会话把闭环合上了。** 凡是 cwd 在课程目录内的 omp 会话都会被并进来:它暴露的"不会的"
 (你的提问、你踩的报错)作为额外卡片进入卡组;你已开始接触的路线 Topic——在会话里被提到,或目录里出现
 对应文件(如 `recursion_solver.py`)——会自动 预习 → 听课。于是路线说"你该会什么",会话揭示"你还不会什么";

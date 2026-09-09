@@ -21,9 +21,15 @@ USAGE:
     tutor course new <dir> --subject S  Draft a learning roadmap into <dir> and seed it
     tutor course <dir>                  Open the interactive course dashboard for <dir>
     tutor course board <dir>            Print the course kanban and exit
+    tutor course state <dir> [--json]  Print course state + review plan (verifiable)
+    tutor course advance <dir> --topic T   Move a topic one stage toward mastery
+    tutor course demote  <dir> --topic T   Move a topic one stage back
+    tutor course review  <dir> --topic T   Record a spaced review (pushes next date)
 
 OPTIONS:
     --subject <text> Subject for `course new` (e.g. \"algorithms\")
+    --topic <text>   Topic substring for advance/demote/review (case-insensitive)
+    --json           Machine-readable output for `course state`
     --lang <zh|en>   Display language (default: auto-detect from locale)
     --no-llm         Do not call `omp -p` (offline roadmap / rule-based briefing)
     -h, --help       Print this help
@@ -38,6 +44,10 @@ enum CourseAct {
     New,
     Open,
     Board,
+    State,
+    Advance,
+    Demote,
+    Review,
 }
 
 enum Cmd {
@@ -48,6 +58,8 @@ enum Cmd {
         action: CourseAct,
         dir: PathBuf,
         subject: Option<String>,
+        topic: Option<String>,
+        json: bool,
     },
 }
 
@@ -118,7 +130,8 @@ fn parse_args() -> Result<Option<Args>> {
     Ok(Some(Args { cmd, locale, llm }))
 }
 
-/// Parse the tail of `tutor course [new|board] <dir> [--subject S]`.
+/// Parse the tail of `tutor course [new|board|state|advance|demote|review] <dir>
+/// [--subject S] [--topic T] [--json]`.
 fn parse_course(
     it: &mut impl Iterator<Item = String>,
     locale: &mut Locale,
@@ -127,6 +140,8 @@ fn parse_course(
     let mut action = CourseAct::Open;
     let mut dir: Option<PathBuf> = None;
     let mut subject: Option<String> = None;
+    let mut topic: Option<String> = None;
+    let mut json = false;
     let mut action_set = false;
 
     while let Some(a) = it.next() {
@@ -139,8 +154,14 @@ fn parse_course(
                 action = CourseAct::New;
                 action_set = true;
             }
-            "board" if !action_set && dir.is_none() => {
-                action = CourseAct::Board;
+            "board" | "state" | "advance" | "demote" | "review" if !action_set && dir.is_none() => {
+                action = match a.as_str() {
+                    "board" => CourseAct::Board,
+                    "state" => CourseAct::State,
+                    "advance" => CourseAct::Advance,
+                    "demote" => CourseAct::Demote,
+                    _ => CourseAct::Review,
+                };
                 action_set = true;
             }
             "--subject" => {
@@ -149,6 +170,13 @@ fn parse_course(
                         .ok_or_else(|| anyhow::anyhow!("--subject needs a value"))?,
                 );
             }
+            "--topic" => {
+                topic = Some(
+                    it.next()
+                        .ok_or_else(|| anyhow::anyhow!("--topic needs a value"))?,
+                );
+            }
+            "--json" => json = true,
             "--lang" => {
                 let v = it
                     .next()
@@ -171,6 +199,8 @@ fn parse_course(
         action,
         dir,
         subject,
+        topic,
+        json,
     })
 }
 
@@ -193,6 +223,8 @@ fn run(args: Args) -> Result<()> {
             action,
             dir,
             subject,
+            topic,
+            json,
         } => {
             let course = CourseDir::new(&dir);
             match action {
@@ -222,6 +254,18 @@ fn run(args: Args) -> Result<()> {
                     course_cli::init(&course, &subject, &md, &clock)
                 }
                 CourseAct::Board => course_cli::board(&tutor, &course, args.locale),
+                CourseAct::State => course_cli::state(&tutor, &course, args.locale, json),
+                CourseAct::Advance | CourseAct::Demote | CourseAct::Review => {
+                    let topic = topic.ok_or_else(|| {
+                        anyhow::anyhow!("this action needs --topic \"<substring>\"")
+                    })?;
+                    let act = match action {
+                        CourseAct::Advance => course_cli::Act::Advance,
+                        CourseAct::Demote => course_cli::Act::Demote,
+                        _ => course_cli::Act::Review,
+                    };
+                    course_cli::act(&tutor, &course, args.locale, &topic, act)
+                }
                 CourseAct::Open => {
                     if !course.exists() {
                         anyhow::bail!(

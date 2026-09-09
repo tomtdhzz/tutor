@@ -20,11 +20,12 @@ use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wra
 use ratatui::{DefaultTerminal, Frame};
 
 use super::i18n::Locale;
-use super::{bar, today_local, truncate};
+use super::{bar, date_of, today_local, truncate};
 use crate::app::{DeckStore, ScannedSession, Summarizer, Tutor};
 use crate::domain::study::{LoopStage, Unknown};
 use crate::domain::{
-    course, human_ago, Board, Column, CourseProgress, DailyBriefing, StudyDeck, WorkItem, WorkState,
+    course, days_between, human_ago, Board, Column, CourseProgress, DailyBriefing, ReviewPlan,
+    StudyDeck, WorkItem, WorkState,
 };
 
 const ACCENT: Color = Color::Green;
@@ -445,6 +446,18 @@ fn state_color(state: crate::domain::WorkState) -> Color {
     }
 }
 
+/// Per-stage accent color for the 预习→改错 loop, so a card's stage reads at a
+/// glance independent of which kanban column it sits in.
+fn stage_color(s: LoopStage) -> Color {
+    match s {
+        LoopStage::Preview => Color::Gray,
+        LoopStage::Class => Color::Cyan,
+        LoopStage::Homework => Color::Yellow,
+        LoopStage::Review => Color::Magenta,
+        LoopStage::Correct => ACCENT,
+    }
+}
+
 fn item_text(it: &WorkItem, locale: Locale, now: SystemTime, fill: Color) -> Text<'static> {
     let live = if it.terminal_id.is_some() {
         format!("  [{}]", locale.live_tag())
@@ -654,26 +667,40 @@ fn course_board_tab(frame: &mut Frame, app: &App, area: Rect) {
     let cols = course::columns(&app.deck);
     let states = [WorkState::Todo, WorkState::Doing, WorkState::Done];
     let areas = Layout::horizontal([Constraint::Ratio(1, 3); 3]).split(area);
+    let now = app.tutor.now();
     for (i, bucket) in cols.iter().enumerate() {
         let focused = i == app.col;
         let items: Vec<ListItem> = bucket
             .iter()
             .map(|u| {
-                let head = Line::from(vec![
+                let mut head = vec![
                     Span::styled(
                         format!("[{}] ", app.locale.stage(u.stage)),
-                        Style::default().fg(state_color(states[i])),
+                        Style::default()
+                            .fg(stage_color(u.stage))
+                            .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
-                        truncate(&u.topic, 26),
+                        truncate(&u.topic, 24),
                         Style::default().add_modifier(Modifier::BOLD),
                     ),
-                ]);
+                ];
+                if u.stage == LoopStage::Review {
+                    let d = days_between(now, u.next_review);
+                    let (mark, color) = if d < 0 {
+                        (" ⚑".to_string(), Color::Red)
+                    } else if d == 0 {
+                        (" ●".to_string(), Color::Yellow)
+                    } else {
+                        (format!(" +{d}d"), Color::DarkGray)
+                    };
+                    head.push(Span::styled(mark, Style::default().fg(color)));
+                }
                 let sub = Line::from(Span::styled(
                     format!("  {}", truncate(&u.detail, 24)),
                     Style::default().fg(Color::DarkGray),
                 ));
-                ListItem::new(Text::from(vec![head, sub]))
+                ListItem::new(Text::from(vec![Line::from(head), sub]))
             })
             .collect();
         let border = if focused { ACCENT } else { Color::DarkGray };
@@ -717,33 +744,59 @@ fn course_brief_tab(frame: &mut Frame, app: &App, area: Rect) {
         Line::raw(""),
     ];
     for s in LoopStage::ALL {
+        let n = counts[s.index()];
         lines.push(Line::from(vec![
             Span::styled(
                 format!("  {:<8}", app.locale.stage(s)),
-                Style::default().fg(ACCENT),
+                Style::default()
+                    .fg(stage_color(s))
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 format!("{:<14}", app.locale.stage_saying(s)),
                 Style::default().fg(Color::Gray),
             ),
-            Span::raw(format!("{}", counts[s.index()])),
+            Span::styled(format!("{n:>3} "), Style::default().fg(Color::White)),
+            Span::styled("▍".repeat(n.min(20)), Style::default().fg(stage_color(s))),
         ]));
     }
     lines.push(Line::raw(""));
     let now = app.tutor.now();
+    let plan = ReviewPlan::of(&app.deck, now);
     lines.push(Line::from(Span::styled(
-        format!(" {} ", app.locale.study_due()),
+        format!(" {} ({}) ", app.locale.review_plan(), plan.total()),
         Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
     )));
-    for u in app.deck.due(now).into_iter().take(8) {
-        lines.push(Line::from(vec![
-            Span::raw("  • "),
-            Span::styled(
-                format!("[{}] ", app.locale.stage(u.stage)),
-                Style::default().fg(Color::DarkGray),
-            ),
-            Span::styled(truncate(&u.topic, 48), Style::default().fg(Color::White)),
-        ]));
+    if plan.is_empty() {
+        lines.push(Line::from(Span::styled(
+            format!("  {}", app.locale.review_plan_empty()),
+            Style::default().fg(Color::DarkGray),
+        )));
+    } else {
+        let buckets = [&plan.overdue, &plan.today, &plan.week, &plan.later];
+        let colors = [Color::Red, Color::Yellow, Color::Cyan, Color::DarkGray];
+        for (bi, b) in buckets.iter().enumerate() {
+            if b.is_empty() {
+                continue;
+            }
+            lines.push(Line::from(Span::styled(
+                format!("  {} ({})", app.locale.review_bucket(bi), b.len()),
+                Style::default().fg(colors[bi]).add_modifier(Modifier::BOLD),
+            )));
+            for e in b.iter().take(6) {
+                lines.push(Line::from(vec![
+                    Span::raw("    • "),
+                    Span::styled(
+                        truncate(&e.card.topic, 40),
+                        Style::default().fg(Color::White),
+                    ),
+                    Span::styled(
+                        format!("  {}", date_of(e.card.next_review)),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]));
+            }
+        }
     }
     frame.render_widget(
         Paragraph::new(lines)
@@ -905,6 +958,53 @@ mod tests {
         assert!(cjk.contains("已完成")); // Done column
         assert!(s.contains("Two Sum"));
         assert!(cjk.contains("Algorithms") || s.contains("Algorithms")); // header subject
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn course_brief_tab_renders_review_plan() {
+        let dir = std::env::temp_dir().join(format!("tutor-rp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("roadmap.md"),
+            "# Algorithms — roadmap\n## Arrays\n- [ ] Two Sum\n",
+        )
+        .unwrap();
+
+        let src = FakeSource(vec![]);
+        let clock = FixedClock(SystemTime::UNIX_EPOCH + Duration::from_secs(2_000_000));
+        let store = MemStore;
+        let brain = NoBrain;
+        let tutor = Tutor::new(&src, &clock);
+        let ctx = CourseCtx {
+            dir: dir.clone(),
+            subject: "Algorithms".into(),
+        };
+        let mut app = App::new(&tutor, &store, &brain, Locale::Zh, Some(ctx)).unwrap();
+        app.tab = 2; // progress/brief tab
+
+        // Before any topic reaches Review, the plan is empty.
+        let mut term = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        term.draw(|f| ui(f, &app)).unwrap();
+        let empty: String = buffer_string(&term)
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        assert!(empty.contains("复习计划"));
+        assert!(empty.contains("暂无复习项"));
+
+        // Walk "Two Sum" into Review, then it appears on the dated plan.
+        let id = crate::domain::study::normalize_id("Two Sum");
+        for _ in 0..3 {
+            app.deck.get_mut(&id).unwrap().promote(tutor.now());
+        }
+        assert_eq!(app.deck.get_mut(&id).unwrap().stage, LoopStage::Review);
+        term.draw(|f| ui(f, &app)).unwrap();
+        let s = buffer_string(&term);
+        assert!(s.contains("Two Sum"));
+        let cjk: String = s.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(!cjk.contains("暂无复习项")); // now scheduled
 
         let _ = std::fs::remove_dir_all(&dir);
     }

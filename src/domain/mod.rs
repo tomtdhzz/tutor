@@ -11,7 +11,7 @@ pub mod study;
 pub use briefing::DailyBriefing;
 pub use course::{CourseProgress, Syllabus, Topic};
 pub use pane::{Activity, Board, Column, Lifecycle, Progress, WorkItem, WorkState};
-pub use study::{LoopStage, StudyDeck, Unknown};
+pub use study::{days_between, LoopStage, ReviewEntry, ReviewPlan, StudyDeck, Unknown};
 
 use std::time::Duration;
 
