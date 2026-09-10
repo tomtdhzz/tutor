@@ -41,8 +41,9 @@ pub trait SessionSource {
     fn collect(&self) -> Result<Vec<ScannedSession>>;
 }
 
-/// The "brain": runs a one-shot completion. Backed by `omp -p`.
-pub trait Summarizer {
+/// The "brain": runs a one-shot completion. Backed by `omp -p`. `Send + Sync` so
+/// the TUI can drive it on a background thread without freezing the event loop.
+pub trait Summarizer: Send + Sync {
     fn run(&self, prompt: &str) -> Result<String>;
 }
 

@@ -125,6 +125,9 @@ next problem. Your progress is counted **by problems solved**, not whole topics,
 bar and the per-card `题 s/N` badge move as you go; finishing all of a topic's problems
 masters it. Lessons are cached to `<dir>/.tutor/lessons/<id>.md` (editable Markdown,
 portable, git-friendly) and your marks to the deck, so reopening is instant; `g` redrafts.
+Generation runs in the **background** — the UI never freezes while `omp -p` works — and you
+pick the **code language** with `c` in the lesson (or `--code rust` on `course new`/`lesson`,
+persisted per course).
 
 **It closes the loop with your sessions.** Any omp session whose cwd is inside the
 course folder is folded in: the "things you don't know" it surfaces (your questions,
@@ -230,7 +233,7 @@ TUI keys (window mode): `Tab` / `1` `2` `3` switch tabs · `←→` move column,
 
 Course-mode keys (`tutor course <dir>`): `←→`/`↑↓` pick a topic · `.` advance · `,` back ·
 `space` mark reviewed · **`p` open the topic's lesson** · `r` reload roadmap · `l` 中/EN · `q` quit.
-In the lesson (one problem at a time): `←→` prev/next · **`space` reveal 题解** · **`Enter` mark 已掌握** · `↑↓` scroll · `g` regenerate · `esc` back.
+In the lesson (one problem at a time): `←→` prev/next · **`space` reveal 题解** · **`Enter` mark 已掌握** · `↑↓` scroll · **`c` code language** · `g` regenerate · `esc` back.
 
 Options:
 

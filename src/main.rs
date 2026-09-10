@@ -3,10 +3,13 @@
 
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use anyhow::Result;
 
-use tutor::adapters::{CourseDir, FileDeckStore, OmpSessions, OmpSummarizer, SystemClock};
+use tutor::adapters::{
+    CourseConfig, CourseDir, FileDeckStore, OmpSessions, OmpSummarizer, SystemClock,
+};
 use tutor::app::Tutor;
 use tutor::delivery::{cli, course as course_cli, tui, Locale};
 use tutor::domain::course as course_domain;
@@ -31,6 +34,7 @@ OPTIONS:
     --subject <text> Subject for `course new` (e.g. \"algorithms\")
     --topic <text>   Topic substring for advance/demote/review (case-insensitive)
     --json           Machine-readable output for `course state`
+    --code <lang>    Programming language for lesson code (course new/lesson), e.g. rust
     --lang <zh|en>   Display language (default: auto-detect from locale)
     --no-llm         Do not call `omp -p` (offline roadmap / rule-based briefing)
     -h, --help       Print this help
@@ -62,6 +66,7 @@ enum Cmd {
         subject: Option<String>,
         topic: Option<String>,
         json: bool,
+        code: Option<String>,
     },
 }
 
@@ -144,6 +149,7 @@ fn parse_course(
     let mut subject: Option<String> = None;
     let mut topic: Option<String> = None;
     let mut json = false;
+    let mut code: Option<String> = None;
     let mut action_set = false;
 
     while let Some(a) = it.next() {
@@ -182,6 +188,12 @@ fn parse_course(
                 );
             }
             "--json" => json = true,
+            "--code" => {
+                code = Some(
+                    it.next()
+                        .ok_or_else(|| anyhow::anyhow!("--code needs a value"))?,
+                );
+            }
             "--lang" => {
                 let v = it
                     .next()
@@ -206,6 +218,7 @@ fn parse_course(
         subject,
         topic,
         json,
+        code,
     })
 }
 
@@ -213,23 +226,27 @@ fn run(args: Args) -> Result<()> {
     let source = OmpSessions::new()?;
     let clock = SystemClock;
     let store = FileDeckStore::new()?;
-    let summarizer = OmpSummarizer::new();
+    let summarizer: Arc<dyn tutor::app::Summarizer> = Arc::new(OmpSummarizer::new());
     let tutor = Tutor::new(&source, &clock);
 
     match args.cmd {
         Cmd::Board => cli::board(&tutor, args.locale),
         Cmd::Briefing => {
-            let sum: Option<&dyn tutor::app::Summarizer> =
-                if args.llm { Some(&summarizer) } else { None };
+            let sum: Option<&dyn tutor::app::Summarizer> = if args.llm {
+                Some(summarizer.as_ref())
+            } else {
+                None
+            };
             cli::briefing(&tutor, &store, sum, args.locale)
         }
-        Cmd::Tui => tui::run(&tutor, &store, &summarizer, args.locale),
+        Cmd::Tui => tui::run(&tutor, &store, Arc::clone(&summarizer), args.locale),
         Cmd::Course {
             action,
             dir,
             subject,
             topic,
             json,
+            code,
         } => {
             let course = CourseDir::new(&dir);
             match action {
@@ -244,8 +261,11 @@ fn run(args: Args) -> Result<()> {
                         anyhow::anyhow!("`course new` needs --subject \"<subject>\"")
                     })?;
                     let md = if args.llm {
-                        match tutor.generate_roadmap(&summarizer, &subject, args.locale.lang_hint())
-                        {
+                        match tutor.generate_roadmap(
+                            summarizer.as_ref(),
+                            &subject,
+                            args.locale.lang_hint(),
+                        ) {
                             Ok(md) => md,
                             Err(e) => {
                                 eprintln!(
@@ -257,7 +277,13 @@ fn run(args: Args) -> Result<()> {
                     } else {
                         course_domain::starter_roadmap(&subject)
                     };
-                    course_cli::init(&course, &subject, &md, &clock)
+                    course_cli::init(&course, &subject, &md, &clock)?;
+                    if let Some(c) = &code {
+                        course.write_config(&CourseConfig {
+                            code_language: Some(c.clone()),
+                        })?;
+                    }
+                    Ok(())
                 }
                 CourseAct::Board => course_cli::board(&tutor, &course, args.locale),
                 CourseAct::State => course_cli::state(&tutor, &course, args.locale, json),
@@ -276,9 +302,25 @@ fn run(args: Args) -> Result<()> {
                     let topic = topic.ok_or_else(|| {
                         anyhow::anyhow!("`course lesson` needs --topic \"<substring>\"")
                     })?;
-                    let sum: Option<&dyn tutor::app::Summarizer> =
-                        if args.llm { Some(&summarizer) } else { None };
-                    course_cli::lesson(&tutor, &course, args.locale, &topic, sum)
+                    // A `--code` here updates the course's persisted preference.
+                    let mut cfg = course.read_config();
+                    if let Some(c) = &code {
+                        cfg.code_language = Some(c.clone());
+                        course.write_config(&cfg)?;
+                    }
+                    let sum: Option<&dyn tutor::app::Summarizer> = if args.llm {
+                        Some(summarizer.as_ref())
+                    } else {
+                        None
+                    };
+                    course_cli::lesson(
+                        &tutor,
+                        &course,
+                        args.locale,
+                        &topic,
+                        sum,
+                        cfg.code_language.as_deref(),
+                    )
                 }
                 CourseAct::Open => {
                     if !course.exists() {
@@ -295,7 +337,7 @@ fn run(args: Args) -> Result<()> {
                     tui::run_course(
                         &tutor,
                         &course_store,
-                        &summarizer,
+                        Arc::clone(&summarizer),
                         args.locale,
                         dir,
                         subject,

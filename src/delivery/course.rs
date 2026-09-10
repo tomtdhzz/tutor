@@ -150,6 +150,7 @@ pub fn lesson(
     locale: Locale,
     topic: &str,
     summarizer: Option<&dyn Summarizer>,
+    code_lang: Option<&str>,
 ) -> Result<()> {
     let (mut deck, subject, store) = load(tutor, course)?;
     let id = select(&deck, topic).ok_or_else(|| {
@@ -168,7 +169,7 @@ pub fn lesson(
             let drafted = match summarizer {
                 Some(s) => {
                     eprintln!("{}", locale.lesson_generating(&title));
-                    tutor.generate_lesson(s, &subject, &title, locale.lang_hint())?
+                    tutor.generate_lesson(s, &subject, &title, locale.lang_hint(), code_lang)?
                 }
                 None => starter_lesson(&title),
             };

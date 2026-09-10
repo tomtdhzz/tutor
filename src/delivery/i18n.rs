@@ -359,10 +359,10 @@ impl Locale {
     pub fn lesson_footer(self) -> &'static str {
         match self {
             Locale::Zh => {
-                " ←→ 上/下一题 · 空格 显示题解 · Enter 标记已掌握 · ↑↓ 滚动 · g 重生成 · esc 返回 "
+                " ←→ 上/下一题 · 空格 题解 · Enter 已掌握 · ↑↓ 滚动 · c 代码语言 · g 重生成 · esc 返回 "
             }
             Locale::En => {
-                " ←→ prev/next · space reveal · Enter mark done · ↑↓ scroll · g regen · esc back "
+                " ←→ prev/next · space reveal · Enter done · ↑↓ scroll · c code lang · g regen · esc back "
             }
         }
     }

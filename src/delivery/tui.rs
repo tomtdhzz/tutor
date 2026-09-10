@@ -9,6 +9,9 @@
 //! actions that call the LLM; both draw a status frame first, then block briefly.
 
 use std::path::PathBuf;
+use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::Arc;
+use std::thread;
 use std::time::SystemTime;
 
 use anyhow::Result;
@@ -21,9 +24,9 @@ use ratatui::{DefaultTerminal, Frame};
 
 use super::i18n::Locale;
 use super::{bar, date_of, today_local, truncate};
-use crate::adapters::CourseDir;
+use crate::adapters::{CourseConfig, CourseDir};
 use crate::app::{DeckStore, ScannedSession, Summarizer, Tutor};
-use crate::domain::lesson::Lesson;
+use crate::domain::lesson::{lesson_prompt, Lesson};
 use crate::domain::study::{LoopStage, Unknown};
 use crate::domain::{
     course, days_between, human_ago, Board, Column, CourseProgress, DailyBriefing, ReviewPlan,
@@ -32,13 +35,31 @@ use crate::domain::{
 
 const ACCENT: Color = Color::Green;
 
-#[derive(Clone, Copy, PartialEq)]
-enum Pending {
-    None,
+/// A background `omp -p` job running on its own thread; the event loop keeps
+/// spinning and applies the result when it lands, so generation never freezes
+/// the UI. `Lesson` carries the target topic so the overlay can open on arrival.
+enum JobKind {
     Mine,
     Brief,
-    Lesson,
+    Lesson { id: String, topic: String },
 }
+
+struct Job {
+    kind: JobKind,
+    rx: Receiver<Result<String>>,
+}
+
+/// Programming languages the `c` key cycles through for lesson code.
+const CODE_LANGS: [&str; 8] = [
+    "python",
+    "rust",
+    "java",
+    "c++",
+    "go",
+    "javascript",
+    "typescript",
+    "c",
+];
 
 /// The lesson overlay: study one problem at a time — attempt it, then reveal the
 /// 题解, then mark it 已掌握. Per-problem completion lives on the deck card, so the
@@ -89,12 +110,14 @@ impl LessonView {
 struct CourseCtx {
     dir: PathBuf,
     subject: String,
+    /// Preferred programming language for lesson code; cycled with `c`.
+    code_lang: Option<String>,
 }
 
 struct App<'a> {
     tutor: &'a Tutor<'a>,
     store: &'a dyn DeckStore,
-    summarizer: &'a dyn Summarizer,
+    summarizer: Arc<dyn Summarizer>,
     locale: Locale,
     tab: usize,
     scans: Vec<ScannedSession>,
@@ -103,7 +126,10 @@ struct App<'a> {
     brief: Option<DailyBriefing>,
     updated: SystemTime,
     status: String,
-    pending: Pending,
+    /// A running background `omp -p` job, if any (blocks starting another).
+    job: Option<Job>,
+    /// Spinner tick, advanced each idle frame while a job runs.
+    spinner: usize,
     col: usize,
     rows: [usize; 3],
     study_row: usize,
@@ -111,15 +137,13 @@ struct App<'a> {
     course: Option<CourseCtx>,
     /// `Some` while the lesson overlay is open over the course kanban.
     lesson: Option<LessonView>,
-    /// A queued lesson to draft via the brain: `(topic id, topic title)`.
-    lesson_req: Option<(String, String)>,
 }
 
 impl<'a> App<'a> {
     fn new(
         tutor: &'a Tutor<'a>,
         store: &'a dyn DeckStore,
-        summarizer: &'a dyn Summarizer,
+        summarizer: Arc<dyn Summarizer>,
         locale: Locale,
         course: Option<CourseCtx>,
     ) -> Result<App<'a>> {
@@ -137,13 +161,13 @@ impl<'a> App<'a> {
             brief: None,
             updated: tutor.now(),
             status: String::new(),
-            pending: Pending::None,
+            job: None,
+            spinner: 0,
             col: if course_mode { 0 } else { 1 },
             rows: [0; 3],
             study_row: 0,
             course,
             lesson: None,
-            lesson_req: None,
         };
         app.refresh()?;
         app.status.clear();
@@ -175,28 +199,52 @@ impl<'a> App<'a> {
         Ok(())
     }
 
-    fn mine(&mut self) {
-        let base = self.deck.clone();
-        match self.tutor.mine(self.summarizer, &self.scans, base) {
-            Ok(deck) => {
-                let _ = self.store.save(&deck);
-                self.deck = deck;
-                self.status = self.locale.status_mined(self.deck.cards.len());
-            }
-            Err(e) => self.status = self.locale.status_error(&e.to_string()),
-        }
-        self.clamp();
+    /// Spawn `omp -p` on a background thread; the event loop applies the result
+    /// when it lands, so the UI never freezes during generation.
+    fn spawn_omp(&self, prompt: String) -> Receiver<Result<String>> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let s = Arc::clone(&self.summarizer);
+        thread::spawn(move || {
+            let _ = tx.send(s.run(&prompt));
+        });
+        rx
     }
 
-    fn make_brief(&mut self) {
-        let mut brief = self.tutor.briefing(&self.board, &self.deck);
-        let date = today_local();
-        if let Err(e) = self.tutor.narrate(self.summarizer, &mut brief, &date) {
-            self.status = self.locale.status_error(&e.to_string());
-        } else {
-            self.status.clear();
+    /// Kick off study mining in the background (window mode).
+    fn start_mine(&mut self) {
+        if self.job.is_some() {
+            return;
         }
+        match self.tutor.mine_prompt(&self.scans) {
+            Some(prompt) => {
+                self.status = self.locale.status_mining().to_string();
+                self.job = Some(Job {
+                    kind: JobKind::Mine,
+                    rx: self.spawn_omp(prompt),
+                });
+            }
+            None => self.status = self.locale.status_mined(self.deck.cards.len()),
+        }
+    }
+
+    /// Compose today's briefing now, then narrate it in the background.
+    fn start_brief(&mut self) {
+        if self.job.is_some() {
+            return;
+        }
+        let brief = self.tutor.briefing(&self.board, &self.deck);
+        let empty = brief.is_empty();
+        let prompt = brief.to_prompt(&today_local());
         self.brief = Some(brief);
+        if empty {
+            self.status.clear();
+            return;
+        }
+        self.status = self.locale.status_briefing().to_string();
+        self.job = Some(Job {
+            kind: JobKind::Brief,
+            rx: self.spawn_omp(prompt),
+        });
     }
 
     fn columns(&self) -> [&Column; 3] {
@@ -262,56 +310,110 @@ impl<'a> App<'a> {
         }
     }
 
-    /// Open the lesson overlay for the selected topic. Shows a cached lesson
-    /// instantly; otherwise queues a draft via the brain (blocking, like `mine`).
+    /// Open the selected topic's lesson: cached → instant; else draft it in the
+    /// background so the UI stays responsive while `omp -p` runs.
     fn open_lesson(&mut self) {
         let Some(c) = &self.course else { return };
         let Some((id, topic)) = self.selected_lesson_target() else {
             return;
         };
-        let course = CourseDir::new(&c.dir);
-        match course.read_lesson(&id) {
-            Ok(Some(md)) => {
-                let lesson = Lesson::parse(&md, &topic);
-                self.begin_lesson(id, topic, lesson);
-            }
-            _ => {
-                self.status = self.locale.lesson_generating(&topic);
-                self.lesson_req = Some((id, topic));
-                self.pending = Pending::Lesson;
-            }
+        if let Ok(Some(md)) = CourseDir::new(&c.dir).read_lesson(&id) {
+            let lesson = Lesson::parse(&md, &topic);
+            self.begin_lesson(id, topic, lesson);
+        } else {
+            self.start_lesson(id, topic);
         }
     }
 
-    /// Re-draft the lesson currently on screen, overwriting its cache.
+    /// Draft a lesson for `(id, topic)` on a background thread.
+    fn start_lesson(&mut self, id: String, topic: String) {
+        if self.job.is_some() {
+            return;
+        }
+        let Some(c) = &self.course else { return };
+        let prompt = lesson_prompt(
+            &c.subject,
+            &topic,
+            self.locale.lang_hint(),
+            c.code_lang.as_deref(),
+        );
+        self.status = self.locale.lesson_generating(&topic);
+        self.job = Some(Job {
+            kind: JobKind::Lesson { id, topic },
+            rx: self.spawn_omp(prompt),
+        });
+    }
+
+    /// Re-draft the on-screen lesson, overwriting its cache (used by `g` and `c`).
     fn regen_lesson(&mut self) {
         if let Some(v) = &self.lesson {
-            self.status = self.locale.lesson_generating(&v.topic);
-            self.lesson_req = Some((v.id.clone(), v.topic.clone()));
-            self.pending = Pending::Lesson;
+            let (id, topic) = (v.id.clone(), v.topic.clone());
+            self.start_lesson(id, topic);
         }
     }
 
-    /// Draft the queued lesson via the brain, cache it, and open the overlay.
-    fn make_lesson(&mut self) {
-        let Some((id, topic)) = self.lesson_req.take() else {
+    /// Cycle the course's lesson code language, persist it, and re-draft.
+    fn cycle_code_lang(&mut self) {
+        if self.job.is_some() || self.lesson.is_none() {
             return;
-        };
+        }
         let Some(c) = &self.course else { return };
-        let course = CourseDir::new(&c.dir);
-        let subject = c.subject.clone();
-        match self
-            .tutor
-            .generate_lesson(self.summarizer, &subject, &topic, self.locale.lang_hint())
-        {
-            Ok(md) => {
-                let _ = course.write_lesson(&id, &md);
-                let lesson = Lesson::parse(&md, &topic);
-                self.begin_lesson(id, topic, lesson);
-                self.status.clear();
-            }
+        let idx = c
+            .code_lang
+            .as_deref()
+            .and_then(|l| CODE_LANGS.iter().position(|x| *x == l))
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        let next = CODE_LANGS[idx % CODE_LANGS.len()].to_string();
+        let _ = CourseDir::new(&c.dir).write_config(&CourseConfig {
+            code_language: Some(next.clone()),
+        });
+        if let Some(c) = &mut self.course {
+            c.code_lang = Some(next);
+        }
+        self.regen_lesson();
+    }
+
+    /// Apply a finished background job's result to state.
+    fn apply_job(&mut self, kind: JobKind, result: Result<String>) {
+        let raw = match result {
+            Ok(raw) => raw,
             Err(e) => {
                 self.status = self.locale.status_error(&e.to_string());
+                return;
+            }
+        };
+        match kind {
+            JobKind::Mine => match self.tutor.mine_apply(&raw, self.deck.clone()) {
+                Ok(deck) => {
+                    let _ = self.store.save(&deck);
+                    self.deck = deck;
+                    self.status = self.locale.status_mined(self.deck.cards.len());
+                    self.clamp();
+                }
+                Err(e) => self.status = self.locale.status_error(&e.to_string()),
+            },
+            JobKind::Brief => {
+                if let Some(b) = &mut self.brief {
+                    let p = raw.trim();
+                    if !p.is_empty() {
+                        b.prose = Some(p.to_string());
+                    }
+                }
+                self.status.clear();
+            }
+            JobKind::Lesson { id, topic } => {
+                let raw = raw.trim();
+                if raw.contains("## ") {
+                    if let Some(c) = &self.course {
+                        let _ = CourseDir::new(&c.dir).write_lesson(&id, raw);
+                    }
+                    let lesson = Lesson::parse(raw, &topic);
+                    self.begin_lesson(id, topic, lesson);
+                    self.status.clear();
+                } else {
+                    self.status = self.locale.status_error("lesson shape invalid");
+                }
             }
         }
     }
@@ -419,7 +521,7 @@ impl<'a> App<'a> {
 pub fn run(
     tutor: &Tutor,
     store: &dyn DeckStore,
-    summarizer: &dyn Summarizer,
+    summarizer: Arc<dyn Summarizer>,
     locale: Locale,
 ) -> Result<()> {
     let mut app = App::new(tutor, store, summarizer, locale, None)?;
@@ -433,17 +535,22 @@ pub fn run(
 pub fn run_course(
     tutor: &Tutor,
     store: &dyn DeckStore,
-    summarizer: &dyn Summarizer,
+    summarizer: Arc<dyn Summarizer>,
     locale: Locale,
     dir: PathBuf,
     subject: String,
 ) -> Result<()> {
+    let code_lang = CourseDir::new(&dir).read_config().code_language;
     let mut app = App::new(
         tutor,
         store,
         summarizer,
         locale,
-        Some(CourseCtx { dir, subject }),
+        Some(CourseCtx {
+            dir,
+            subject,
+            code_lang,
+        }),
     )?;
     let mut terminal = ratatui::init();
     let result = run_loop(&mut terminal, &mut app);
@@ -455,27 +562,26 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
     loop {
         terminal.draw(|frame| ui(frame, app))?;
 
-        // Execute a queued LLM action right after its status frame is drawn.
-        match app.pending {
-            Pending::Mine => {
-                app.pending = Pending::None;
-                app.mine();
-                continue;
-            }
-            Pending::Brief => {
-                app.pending = Pending::None;
-                app.make_brief();
-                continue;
-            }
-            Pending::Lesson => {
-                app.pending = Pending::None;
-                app.make_lesson();
-                continue;
-            }
-            Pending::None => {}
+        // Apply a finished background job; otherwise advance the spinner so the
+        // status line animates while `omp -p` runs. The loop never blocks on it.
+        let finished = match &app.job {
+            Some(job) => match job.rx.try_recv() {
+                Ok(res) => Some(res),
+                Err(TryRecvError::Empty) => None,
+                Err(TryRecvError::Disconnected) => {
+                    Some(Err(anyhow::anyhow!("brain thread ended unexpectedly")))
+                }
+            },
+            None => None,
+        };
+        if let Some(res) = finished {
+            let job = app.job.take().expect("job present");
+            app.apply_job(job.kind, res);
+        } else if app.job.is_some() {
+            app.spinner = app.spinner.wrapping_add(1);
         }
 
-        if event::poll(std::time::Duration::from_millis(200))? {
+        if event::poll(std::time::Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind != KeyEventKind::Press {
                     continue;
@@ -506,6 +612,8 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
                         // Mark the current problem 已掌握 (moves progress + kanban).
                         KeyCode::Enter => app.toggle_current_solved(),
                         KeyCode::Char('g') if app.course.is_some() => app.regen_lesson(),
+                        // Cycle the lesson's code language and re-draft.
+                        KeyCode::Char('c') if app.course.is_some() => app.cycle_code_lang(),
                         KeyCode::Down | KeyCode::Char('j') => {
                             let max = app.lesson_scroll_max();
                             if let Some(v) = app.lesson.as_mut() {
@@ -529,14 +637,8 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
                     KeyCode::Char('1') => app.tab = 0,
                     KeyCode::Char('2') => app.tab = 1,
                     KeyCode::Char('3') => app.tab = 2,
-                    KeyCode::Char('m') if app.tab == 0 && app.course.is_none() => {
-                        app.status = app.locale.status_mining().to_string();
-                        app.pending = Pending::Mine;
-                    }
-                    KeyCode::Char('b') if app.tab == 2 && app.course.is_none() => {
-                        app.status = app.locale.status_briefing().to_string();
-                        app.pending = Pending::Brief;
-                    }
+                    KeyCode::Char('m') if app.tab == 0 && app.course.is_none() => app.start_mine(),
+                    KeyCode::Char('b') if app.tab == 2 && app.course.is_none() => app.start_brief(),
                     // Course kanban (tab 1): manual stage advancement.
                     KeyCode::Char('.') | KeyCode::Char('>')
                         if app.course.is_some() && app.tab == 1 =>
@@ -587,11 +689,19 @@ fn ui(frame: &mut Frame, app: &App) {
     }
     if let Some(view) = &app.lesson {
         let solved = app.lesson_solved();
-        lesson_overlay(frame, view, &solved, app.locale, body);
+        let code = app.course.as_ref().and_then(|c| c.code_lang.as_deref());
+        lesson_overlay(frame, view, &solved, code, app.locale, body);
     }
 
+    // Spinner while a background omp job runs, so generation never looks frozen.
+    const SPIN: [&str; 4] = ["◐", "◓", "◑", "◒"];
+    let status_text = if app.job.is_some() {
+        format!(" {} {}", SPIN[app.spinner % SPIN.len()], app.status)
+    } else {
+        format!(" {}", app.status)
+    };
     let status_line = Paragraph::new(Line::from(Span::styled(
-        format!(" {}", app.status),
+        status_text,
         Style::default().fg(Color::Yellow),
     )));
     frame.render_widget(status_line, status);
@@ -1076,10 +1186,14 @@ fn lesson_overlay(
     frame: &mut Frame,
     view: &LessonView,
     solved: &[bool],
+    code_lang: Option<&str>,
     locale: Locale,
     area: Rect,
 ) {
-    let title = format!(" {} ", view.topic);
+    let title = match code_lang {
+        Some(c) => format!(" {}  ·  [{c}] ", view.topic),
+        None => format!(" {} ", view.topic),
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(ACCENT))
@@ -1260,9 +1374,9 @@ mod tests {
         let src = FakeSource(sample());
         let clock = FixedClock(SystemTime::UNIX_EPOCH + Duration::from_secs(2_000_000));
         let store = MemStore;
-        let brain = NoBrain;
+        let brain: Arc<dyn Summarizer> = Arc::new(NoBrain);
         let tutor = Tutor::new(&src, &clock);
-        let mut app = App::new(&tutor, &store, &brain, Locale::Zh, None).unwrap();
+        let mut app = App::new(&tutor, &store, brain, Locale::Zh, None).unwrap();
         app.tab = tab;
         let mut term = Terminal::new(TestBackend::new(120, 30)).unwrap();
         term.draw(|f| ui(f, &app)).unwrap();
@@ -1351,13 +1465,14 @@ mod tests {
         let src = FakeSource(vec![]);
         let clock = FixedClock(SystemTime::UNIX_EPOCH + Duration::from_secs(2_000_000));
         let store = MemStore;
-        let brain = NoBrain;
+        let brain: Arc<dyn Summarizer> = Arc::new(NoBrain);
         let tutor = Tutor::new(&src, &clock);
         let ctx = CourseCtx {
             dir: dir.clone(),
             subject: "Algorithms".into(),
+            code_lang: None,
         };
-        let mut app = App::new(&tutor, &store, &brain, Locale::Zh, Some(ctx)).unwrap();
+        let mut app = App::new(&tutor, &store, brain, Locale::Zh, Some(ctx)).unwrap();
 
         // Deck seeded from the roadmap: one Preview (todo), one Correct (done).
         assert_eq!(app.deck.cards.len(), 2);
@@ -1387,13 +1502,14 @@ mod tests {
         let src = FakeSource(vec![]);
         let clock = FixedClock(SystemTime::UNIX_EPOCH + Duration::from_secs(2_000_000));
         let store = MemStore;
-        let brain = NoBrain;
+        let brain: Arc<dyn Summarizer> = Arc::new(NoBrain);
         let tutor = Tutor::new(&src, &clock);
         let ctx = CourseCtx {
             dir: dir.clone(),
             subject: "Algorithms".into(),
+            code_lang: None,
         };
-        let mut app = App::new(&tutor, &store, &brain, Locale::Zh, Some(ctx)).unwrap();
+        let mut app = App::new(&tutor, &store, brain, Locale::Zh, Some(ctx)).unwrap();
         app.tab = 2; // progress/brief tab
 
         // Before any topic reaches Review, the plan is empty.

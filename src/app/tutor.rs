@@ -72,15 +72,10 @@ impl<'a> Tutor<'a> {
         deck
     }
 
-    /// LLM mining pass: distill recent snippets into well-formed cards with a
-    /// stage, and merge them into the deck. Refines the heuristic seeds.
-    pub fn mine(
-        &self,
-        summarizer: &dyn Summarizer,
-        scans: &[ScannedSession],
-        base: StudyDeck,
-    ) -> Result<StudyDeck> {
-        let now = self.now();
+    /// Build the mining prompt from recent snippets, or `None` when there is
+    /// nothing to mine. Split from [`mine_apply`] so the TUI can run the
+    /// `omp -p` call on a background thread and apply the result later.
+    pub fn mine_prompt(&self, scans: &[ScannedSession]) -> Option<String> {
         let mut snippets: Vec<(&Snippet, &str)> = Vec::new();
         for s in scans {
             for sn in &s.snippets {
@@ -90,9 +85,8 @@ impl<'a> Tutor<'a> {
         snippets.sort_by_key(|(sn, _)| std::cmp::Reverse(sn.at));
         snippets.truncate(MINE_SNIPPET_CAP);
         if snippets.is_empty() {
-            return Ok(base);
+            return None;
         }
-
         let mut prompt = String::from(
             "From the raw excerpts below (a developer's questions and errors from coding sessions), \
              extract the distinct knowledge gaps — 'things they don't yet know'. Merge duplicates. \
@@ -106,18 +100,36 @@ impl<'a> Tutor<'a> {
         for (sn, project) in &snippets {
             prompt.push_str(&format!("- [{}] {}\n", project, one_line(&sn.text, 240)));
         }
+        Some(prompt)
+    }
 
-        let raw = summarizer
-            .run(&prompt)
-            .context("mining summarizer call failed")?;
-        let cards = parse_mined(&raw).context("could not parse mined cards from model output")?;
-
+    /// Parse a mining reply into cards and merge them into `base`.
+    pub fn mine_apply(&self, raw: &str, base: StudyDeck) -> Result<StudyDeck> {
+        let now = self.now();
+        let cards = parse_mined(raw).context("could not parse mined cards from model output")?;
         let mut deck = base;
         for c in cards {
             let stage = LoopStage::from_key(&c.stage).unwrap_or(LoopStage::Preview);
             deck.upsert(Unknown::seed(&c.topic, &c.detail, "mined", stage, now));
         }
         Ok(deck)
+    }
+
+    /// LLM mining pass (synchronous): build the prompt, call the brain, and merge.
+    /// Used by non-interactive callers; the TUI uses [`mine_prompt`]/[`mine_apply`].
+    pub fn mine(
+        &self,
+        summarizer: &dyn Summarizer,
+        scans: &[ScannedSession],
+        base: StudyDeck,
+    ) -> Result<StudyDeck> {
+        let Some(prompt) = self.mine_prompt(scans) else {
+            return Ok(base);
+        };
+        let raw = summarizer
+            .run(&prompt)
+            .context("mining summarizer call failed")?;
+        self.mine_apply(&raw, base)
     }
 
     /// Compose the structured daily briefing.
@@ -153,9 +165,12 @@ impl<'a> Tutor<'a> {
         subject: &str,
         topic: &str,
         lang: &str,
+        code_lang: Option<&str>,
     ) -> Result<String> {
         let md = summarizer
-            .run(&crate::domain::lesson::lesson_prompt(subject, topic, lang))
+            .run(&crate::domain::lesson::lesson_prompt(
+                subject, topic, lang, code_lang,
+            ))
             .context("lesson generator call failed")?;
         // A usable lesson must carry at least one problem heading.
         if !md.contains("## ") {

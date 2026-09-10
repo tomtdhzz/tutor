@@ -6,8 +6,18 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 
 use super::cache_file::FileDeckStore;
+
+/// Per-course preferences persisted at `<dir>/.tutor/config.json`.
+#[derive(Default, Clone, Serialize, Deserialize)]
+pub struct CourseConfig {
+    /// Preferred programming language for lesson code (e.g. "rust"); `None` lets
+    /// the model choose.
+    #[serde(default)]
+    pub code_language: Option<String>,
+}
 
 pub struct CourseDir {
     dir: PathBuf,
@@ -101,6 +111,25 @@ impl CourseDir {
     pub fn deck_store(&self) -> Result<FileDeckStore> {
         self.ensure()?;
         Ok(FileDeckStore::at(self.deck_path()))
+    }
+
+    pub fn config_path(&self) -> PathBuf {
+        self.dir.join(".tutor").join("config.json")
+    }
+
+    /// Read the course config, defaulting to empty when absent or unreadable.
+    pub fn read_config(&self) -> CourseConfig {
+        fs::read_to_string(self.config_path())
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn write_config(&self, cfg: &CourseConfig) -> Result<()> {
+        self.ensure()?;
+        let body = serde_json::to_string_pretty(cfg).context("serialize course config")?;
+        fs::write(self.config_path(), body).context("write config.json")?;
+        Ok(())
     }
 }
 

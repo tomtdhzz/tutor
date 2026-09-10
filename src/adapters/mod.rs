@@ -10,6 +10,6 @@ pub mod omp_summarize;
 
 pub use cache_file::FileDeckStore;
 pub use clock::SystemClock;
-pub use course_dir::CourseDir;
+pub use course_dir::{CourseConfig, CourseDir};
 pub use omp_sessions::OmpSessions;
 pub use omp_summarize::OmpSummarizer;

@@ -142,11 +142,18 @@ fn finish(mut p: Problem) -> Problem {
 
 /// The prompt handed to `omp -p` to draft a lesson for one topic. `lang` is a
 /// natural-language instruction (supplied by the presentation layer) telling the
-/// model which language to write in, so the domain stays language-free.
-pub fn lesson_prompt(subject: &str, topic: &str, lang: &str) -> String {
+/// model which language to write in. `code_lang`, when set, pins the programming
+/// language used in every code example; when `None` the model chooses.
+pub fn lesson_prompt(subject: &str, topic: &str, lang: &str, code_lang: Option<&str>) -> String {
+    let code = match code_lang {
+        Some(c) => {
+            format!("Write EVERY code example in {c}. Use idiomatic {c} in a fenced code block.")
+        }
+        None => "Use whichever popular programming language fits best.".to_string(),
+    };
     format!(
         "Create a focused practice lesson for the topic \"{topic}\" within the \
-         subject \"{subject}\". {lang}\n\n\
+         subject \"{subject}\". {lang} {code}\n\n\
          Output ONLY GitHub-Flavored Markdown, nothing else, in exactly this shape:\n\
          # {topic}\n\n\
          <one short paragraph: what this topic is and why it matters>\n\n\
@@ -240,5 +247,13 @@ mod tests {
         let l = Lesson::parse(&starter_lesson("图的遍历"), "");
         assert_eq!(l.topic, "图的遍历");
         assert_eq!(l.problems.len(), 1);
+    }
+
+    #[test]
+    fn lesson_prompt_pins_code_language() {
+        let pinned = lesson_prompt("algorithms", "二分查找", "中文", Some("rust"));
+        assert!(pinned.contains("in rust"));
+        let free = lesson_prompt("algorithms", "二分查找", "中文", None);
+        assert!(!free.contains("EVERY code example"));
     }
 }
