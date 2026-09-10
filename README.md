@@ -115,13 +115,16 @@ tutor course lesson  ./algo --topic "binary search"   # draft/print the topic's 
 A topic only joins the review plan once it reaches **Review**; each `review`
 pushes its next date out on the 1·3·7·14·30-day ladder, and mastery drops it off.
 
-**Each topic is a lesson.** The roadmap lists topic *names*; `course lesson` (or `p`
-in the TUI) has the brain expand one into a **preview lesson** — a short overview plus
-3–5 practice **problems** of increasing difficulty, each with a full **solution** (idea,
-steps, code, complexity). Lessons are drafted on demand and cached to
-`<dir>/.tutor/lessons/<id>.md` (editable Markdown, portable, git-friendly), so reopening
-is instant with no omp call; in the TUI, `s` hides solutions for self-testing and `g`
-regenerates.
+**Each topic is a lesson you work, one problem at a time.** The roadmap lists topic
+*names*; `course lesson` (or `p`/Enter in the TUI) has the brain expand one into a
+**preview lesson** — a short overview plus 3–5 practice **problems** of increasing
+difficulty, each with a full **solution** (idea, steps, code, complexity). In the TUI
+you study it like a course: one problem shows at a time, you **attempt it first**, press
+`space` to reveal the **题解**, then `Enter` to mark it **已掌握** — and `←→` moves to the
+next problem. Your progress is counted **by problems solved**, not whole topics, so the
+bar and the per-card `题 s/N` badge move as you go; finishing all of a topic's problems
+masters it. Lessons are cached to `<dir>/.tutor/lessons/<id>.md` (editable Markdown,
+portable, git-friendly) and your marks to the deck, so reopening is instant; `g` redrafts.
 
 **It closes the loop with your sessions.** Any omp session whose cwd is inside the
 course folder is folded in: the "things you don't know" it surfaces (your questions,
@@ -140,11 +143,12 @@ Two ways: the interactive dashboard, or a one-shot command.
    topic — your **课题**.
 2. Move the selection with `←→` (switch column) and `↑↓` / `jk` (move within a
    column) to the topic you want to study.
-3. Press **`p`** to open that topic's **lesson**: a short overview, then `题目 1..N`,
-   each followed by its `题解`.
-4. Inside the lesson: `↑↓` / `jk` scroll · **`s`** hide every 题解 (try it yourself
-   first), `s` again to reveal · **`g`** redraft it via `omp -p` · **`esc`** go back
-   to the kanban.
+3. Press **`p`** (or `Enter`, and also on the **复习** tab) to open that topic's
+   **lesson** — it shows **one problem at a time** with a `题目 i/N` counter.
+4. For each problem: read it, **try it yourself**, press **`space`** to reveal the
+   `题解`, then **`Enter`** to mark it **已掌握**. **`←→`** move to the prev/next
+   problem · `↑↓`/`jk` scroll · **`g`** redraft via `omp -p` · **`esc`** back to the
+   kanban. Your marks persist, and progress is counted by solved problems.
 
 The first `p` (or `g`) on a topic calls `omp -p` — a few seconds, with `正在生成讲义…`
 in the status line. After that the lesson is cached, so reopening it is instant.
@@ -226,7 +230,7 @@ TUI keys (window mode): `Tab` / `1` `2` `3` switch tabs · `←→` move column,
 
 Course-mode keys (`tutor course <dir>`): `←→`/`↑↓` pick a topic · `.` advance · `,` back ·
 `space` mark reviewed · **`p` open the topic's lesson** · `r` reload roadmap · `l` 中/EN · `q` quit.
-In the lesson: `↑↓`/`jk` scroll · **`s` show/hide 题解** · `g` regenerate (omp -p) · `esc` back.
+In the lesson (one problem at a time): `←→` prev/next · **`space` reveal 题解** · **`Enter` mark 已掌握** · `↑↓` scroll · `g` regenerate · `esc` back.
 
 Options:
 

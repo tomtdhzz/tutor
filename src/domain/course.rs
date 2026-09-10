@@ -131,28 +131,56 @@ pub fn columns(deck: &StudyDeck) -> [Vec<&Unknown>; 3] {
     [todo, doing, done]
 }
 
-/// Mastery progress across the whole course.
+/// Fine-grained course progress, counted by *problems*, not whole topics.
+///
+/// Each topic contributes its lesson's solved/total problems; a topic without a
+/// lesson yet counts as a single unsolved problem (solved only if mastered by a
+/// roadmap `- [x]` / the `.` key). So the bar reflects how many problems you have
+/// actually worked through, and partly-done topics move it fractionally.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CourseProgress {
+    /// Topics fully done (all problems solved, or mastered when lesson-less).
     pub mastered: usize,
+    /// Total topic cards.
     pub total: usize,
+    /// Problems marked done across the course.
+    pub solved_problems: usize,
+    /// Total problems across the course (lesson-less topics count as 1).
+    pub total_problems: usize,
 }
 
 impl CourseProgress {
     pub fn of(deck: &StudyDeck) -> CourseProgress {
-        let mastered = deck
-            .cards
-            .iter()
-            .filter(|c| c.stage == LoopStage::Correct)
-            .count();
+        let mut mastered = 0;
+        let mut solved_problems = 0;
+        let mut total_problems = 0;
+        for c in &deck.cards {
+            let n = c.problems_total();
+            if n > 0 {
+                let done = c.solved_count();
+                solved_problems += done;
+                total_problems += n;
+                if done == n {
+                    mastered += 1;
+                }
+            } else {
+                total_problems += 1;
+                if c.stage == LoopStage::Correct {
+                    solved_problems += 1;
+                    mastered += 1;
+                }
+            }
+        }
         CourseProgress {
             mastered,
             total: deck.cards.len(),
+            solved_problems,
+            total_problems,
         }
     }
     pub fn pct(&self) -> u8 {
-        (self.mastered * 100 + self.total / 2)
-            .checked_div(self.total)
+        (self.solved_problems * 100 + self.total_problems / 2)
+            .checked_div(self.total_problems)
             .map_or(0, |v| v.min(100) as u8)
     }
 }
@@ -305,6 +333,42 @@ mod tests {
         assert_eq!(doing.len(), 0);
         assert_eq!(done.len(), 1); // Contains Duplicate
         assert_eq!(CourseProgress::of(&deck).pct(), 25);
+    }
+
+    #[test]
+    fn problem_completion_drives_stage_and_progress() {
+        let mut deck = StudyDeck::default();
+        deck.upsert(Unknown::seed(
+            "二分查找",
+            "d",
+            "algo",
+            LoopStage::Preview,
+            t(),
+        ));
+        let id = crate::domain::study::normalize_id("二分查找");
+
+        let card = deck.get_mut(&id).unwrap();
+        card.sync_problems(4);
+        assert_eq!(card.problems_total(), 4);
+
+        // One problem done → topic is in progress (Class), 1/4 of its problems.
+        card.toggle_solved(0, t());
+        card.sync_stage_from_problems(t());
+        assert_eq!(card.stage, LoopStage::Class);
+        let p = CourseProgress::of(&deck);
+        assert_eq!((p.solved_problems, p.total_problems), (1, 4));
+        assert_eq!(p.pct(), 25);
+
+        // All problems done → topic mastered (Correct), progress full.
+        let card = deck.get_mut(&id).unwrap();
+        for i in 1..4 {
+            card.toggle_solved(i, t());
+        }
+        card.sync_stage_from_problems(t());
+        assert_eq!(card.stage, LoopStage::Correct);
+        let p = CourseProgress::of(&deck);
+        assert_eq!(p.mastered, 1);
+        assert_eq!(p.pct(), 100);
     }
 
     #[test]

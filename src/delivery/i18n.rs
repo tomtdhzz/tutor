@@ -222,12 +222,18 @@ impl Locale {
 
     pub fn course_footer(self, tab: usize) -> &'static str {
         match (self, tab) {
+            (Locale::Zh, 0) => {
+                " ↑↓ 选 · Enter/p 预习讲义 · Tab 切页 · r 重载 · l 中/EN · q "
+            }
             (Locale::Zh, 1) => {
-                " ←→ 列 · ↑↓ 选 · . 进阶 · , 退阶 · 空格 复习 · p 讲义 · r 重载 · l 中/EN · q "
+                " ←→ 列 · ↑↓ 选 · . 进阶 · , 退阶 · 空格 复习 · Enter/p 讲义 · r 重载 · l · q "
             }
             (Locale::Zh, _) => " Tab/1-3 切换 · r 重载路线(roadmap.md) · l 中/EN · q 退出 ",
+            (Locale::En, 0) => {
+                " ↑↓ pick · Enter/p lesson · Tab tabs · r reload · l 中/EN · q "
+            }
             (Locale::En, 1) => {
-                " ←→ col · ↑↓ pick · . advance · , back · space review · p lesson · r reload · l · q "
+                " ←→ col · ↑↓ pick · . advance · , back · space review · Enter/p lesson · r reload · q "
             }
             (Locale::En, _) => " Tab/1-3 switch · r reload roadmap.md · l zh/EN · q quit ",
         }
@@ -301,19 +307,63 @@ impl Locale {
         }
     }
 
-    /// Shown in place of a solution when solutions are hidden for self-testing.
-    pub fn lesson_solution_hidden(self) -> &'static str {
+    /// Progress counter shown atop the lesson overlay: which problem of how many.
+    pub fn lesson_counter(self, i: usize, n: usize) -> String {
         match self {
-            Locale::Zh => "（题解已隐藏 — 按 s 显示）",
-            Locale::En => "(solution hidden — press s to reveal)",
+            Locale::Zh => format!("题目 {i}/{n}"),
+            Locale::En => format!("Problem {i}/{n}"),
+        }
+    }
+
+    /// Compact per-topic problem badge on the kanban, e.g. "题 2/5".
+    pub fn lesson_badge(self, done: usize, n: usize) -> String {
+        match self {
+            Locale::Zh => format!("题 {done}/{n}"),
+            Locale::En => format!("Q {done}/{n}"),
+        }
+    }
+
+    /// This topic's own completion, e.g. "本话题 2/5 已掌握".
+    pub fn lesson_topic_progress(self, done: usize, n: usize) -> String {
+        match self {
+            Locale::Zh => format!("本话题 {done}/{n} 已掌握"),
+            Locale::En => format!("this topic {done}/{n} done"),
+        }
+    }
+
+    /// Badge for a problem already marked done.
+    pub fn lesson_solved_tag(self) -> &'static str {
+        match self {
+            Locale::Zh => "已掌握",
+            Locale::En => "done",
+        }
+    }
+
+    /// Badge for a problem not yet done.
+    pub fn lesson_unsolved_tag(self) -> &'static str {
+        match self {
+            Locale::Zh => "未完成",
+            Locale::En => "todo",
+        }
+    }
+
+    /// Attempt-first hint shown while the 题解 is still hidden.
+    pub fn lesson_attempt_hint(self) -> &'static str {
+        match self {
+            Locale::Zh => "先自己做一遍 —— 按 空格 显示题解",
+            Locale::En => "try it yourself first — press space to reveal the solution",
         }
     }
 
     /// Footer hints inside the lesson overlay.
     pub fn lesson_footer(self) -> &'static str {
         match self {
-            Locale::Zh => " ↑↓/jk 滚动 · s 题解开关 · g 重新生成(omp) · esc 返回 ",
-            Locale::En => " ↑↓/jk scroll · s toggle solutions · g regenerate (omp) · esc back ",
+            Locale::Zh => {
+                " ←→ 上/下一题 · 空格 显示题解 · Enter 标记已掌握 · ↑↓ 滚动 · g 重生成 · esc 返回 "
+            }
+            Locale::En => {
+                " ←→ prev/next · space reveal · Enter mark done · ↑↓ scroll · g regen · esc back "
+            }
         }
     }
 

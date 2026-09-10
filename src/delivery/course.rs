@@ -151,7 +151,7 @@ pub fn lesson(
     topic: &str,
     summarizer: Option<&dyn Summarizer>,
 ) -> Result<()> {
-    let (deck, subject, _store) = load(tutor, course)?;
+    let (mut deck, subject, store) = load(tutor, course)?;
     let id = select(&deck, topic).ok_or_else(|| {
         anyhow::anyhow!("no topic matching \"{topic}\" — see `tutor course state` for topics")
     })?;
@@ -177,12 +177,23 @@ pub fn lesson(
         }
     };
 
-    print!("{}", render_lesson(&Lesson::parse(&md, &title), locale));
+    // Sync the deck card's problem count so `course state` progress reflects this
+    // topic's problems, and read back its per-problem 已掌握 marks for display.
+    let parsed = Lesson::parse(&md, &title);
+    let solved = if let Some(card) = deck.get_mut(&id) {
+        card.sync_problems(parsed.problems.len());
+        card.solved.clone()
+    } else {
+        Vec::new()
+    };
+    store.save(&deck)?;
+    print!("{}", render_lesson(&parsed, &solved, locale));
     Ok(())
 }
 
-/// Human-readable lesson: topic, overview, then each problem with its 题解.
-fn render_lesson(lesson: &Lesson, locale: Locale) -> String {
+/// Human-readable lesson: topic, overview, then each problem with a done marker
+/// and its 题解. `solved[i]` marks problem `i` as 已掌握.
+fn render_lesson(lesson: &Lesson, solved: &[bool], locale: Locale) -> String {
     let mut s = format!("{}\n", lesson.topic);
     if !lesson.overview.is_empty() {
         s.push_str(&lesson.overview);
@@ -195,7 +206,12 @@ fn render_lesson(lesson: &Lesson, locale: Locale) -> String {
         } else {
             p.title.clone()
         };
-        s.push_str(&format!("── {label} ──\n"));
+        let mark = if solved.get(i).copied().unwrap_or(false) {
+            format!("[{}]", locale.lesson_solved_tag())
+        } else {
+            format!("[{}]", locale.lesson_unsolved_tag())
+        };
+        s.push_str(&format!("── {label} ── {mark}\n"));
         if !p.prompt.is_empty() {
             s.push_str(&p.prompt);
             s.push('\n');
@@ -261,13 +277,17 @@ fn state_json(
                 "reviews": c.reviews,
                 "next_review": date_of(c.next_review),
                 "due": c.is_due(now),
+                "problems": {"solved": c.solved_count(), "total": c.problems_total()},
             })
         })
         .collect();
     let doc = serde_json::json!({
         "subject": subject,
         "dir": course.dir().display().to_string(),
-        "progress": {"mastered": p.mastered, "total": p.total, "pct": p.pct()},
+        "progress": {
+            "mastered": p.mastered, "total": p.total, "pct": p.pct(),
+            "solved_problems": p.solved_problems, "total_problems": p.total_problems,
+        },
         "stages": {
             "preview": counts[0], "class": counts[1], "homework": counts[2],
             "review": counts[3], "correct": counts[4],
@@ -296,11 +316,13 @@ fn state_text(
     let p = CourseProgress::of(deck);
     let counts = deck.counts();
     let mut s = format!(
-        "{subject}\n{}  {}%  ·  {}/{} 掌握\n\n",
+        "{subject}\n{}  {}%  ·  {}/{} 掌握  ·  题目 {}/{}\n\n",
         bar(p.pct()),
         p.pct(),
         p.mastered,
-        p.total
+        p.total,
+        p.solved_problems,
+        p.total_problems,
     );
     for st in LoopStage::ALL {
         s.push_str(&format!(

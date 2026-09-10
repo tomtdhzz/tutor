@@ -92,6 +92,10 @@ pub struct Unknown {
     pub first_seen: SystemTime,
     pub last_seen: SystemTime,
     pub next_review: SystemTime,
+    /// Per-problem completion for this topic's lesson (empty until a lesson is
+    /// opened). Length = number of problems; each `true` = a problem the learner
+    /// has worked through and marked 已掌握. Drives fine-grained course progress.
+    pub solved: Vec<bool>,
 }
 
 impl Unknown {
@@ -122,6 +126,7 @@ impl Unknown {
             first_seen: at,
             last_seen: at,
             next_review: at + Self::interval(0),
+            solved: Vec::new(),
         }
     }
 
@@ -159,6 +164,55 @@ impl Unknown {
     pub fn demote(&mut self, now: SystemTime) {
         self.stage = self.stage.prev();
         self.last_seen = now;
+    }
+
+    /// Resize the per-problem completion vector to `n`, preserving existing marks.
+    /// Called when a lesson is opened/generated so the deck knows how many
+    /// problems the topic has. Never changes the stage on its own.
+    pub fn sync_problems(&mut self, n: usize) {
+        if self.solved.len() != n {
+            self.solved.resize(n, false);
+        }
+    }
+
+    /// Toggle problem `i`'s 已掌握 mark, stamping recency. No-op if out of range.
+    pub fn toggle_solved(&mut self, i: usize, now: SystemTime) {
+        if let Some(b) = self.solved.get_mut(i) {
+            *b = !*b;
+            self.last_seen = now;
+        }
+    }
+
+    /// How many of this topic's problems are marked done.
+    pub fn solved_count(&self) -> usize {
+        self.solved.iter().filter(|b| **b).count()
+    }
+
+    /// Number of problems in this topic's lesson (0 until a lesson is opened).
+    pub fn problems_total(&self) -> usize {
+        self.solved.len()
+    }
+
+    /// Re-derive the kanban stage from problem completion — for lesson-bearing
+    /// topics, problem progress *is* the stage: none → Preview, some → Class, all
+    /// → Correct. Topics without a lesson keep their manually-set stage.
+    pub fn sync_stage_from_problems(&mut self, now: SystemTime) {
+        let n = self.solved.len();
+        if n == 0 {
+            return;
+        }
+        let done = self.solved_count();
+        let next = if done == n {
+            LoopStage::Correct
+        } else if done > 0 {
+            LoopStage::Class
+        } else {
+            LoopStage::Preview
+        };
+        if next != self.stage {
+            self.stage = next;
+            self.last_seen = now;
+        }
     }
 }
 

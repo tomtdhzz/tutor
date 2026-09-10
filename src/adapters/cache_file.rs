@@ -88,6 +88,8 @@ struct CardDto {
     first_seen_ms: u64,
     last_seen_ms: u64,
     next_review_ms: u64,
+    #[serde(default)]
+    solved: Vec<bool>,
 }
 
 fn to_ms(t: SystemTime) -> u64 {
@@ -111,6 +113,7 @@ impl From<&Unknown> for CardDto {
             first_seen_ms: to_ms(u.first_seen),
             last_seen_ms: to_ms(u.last_seen),
             next_review_ms: to_ms(u.next_review),
+            solved: u.solved.clone(),
         }
     }
 }
@@ -128,6 +131,7 @@ impl From<CardDto> for Unknown {
             first_seen: from_ms(c.first_seen_ms),
             last_seen: from_ms(c.last_seen_ms),
             next_review: from_ms(c.next_review_ms),
+            solved: c.solved,
         }
     }
 }

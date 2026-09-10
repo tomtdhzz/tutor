@@ -40,13 +40,18 @@ enum Pending {
     Lesson,
 }
 
-/// The lesson overlay: a topic's 题目/题解, scrollable, with a self-test toggle.
+/// The lesson overlay: study one problem at a time — attempt it, then reveal the
+/// 题解, then mark it 已掌握. Per-problem completion lives on the deck card, so the
+/// overlay only tracks which problem is on screen and whether its solution shows.
 struct LessonView {
     id: String,
     topic: String,
     lesson: Lesson,
+    /// Index of the problem currently on screen.
+    cur: usize,
+    /// Whether the current problem's 题解 is revealed.
+    revealed: bool,
     scroll: u16,
-    show_solutions: bool,
 }
 
 impl LessonView {
@@ -55,9 +60,29 @@ impl LessonView {
             id,
             topic,
             lesson,
+            cur: 0,
+            revealed: false,
             scroll: 0,
-            show_solutions: true,
         }
+    }
+
+    fn problem_count(&self) -> usize {
+        self.lesson.problems.len()
+    }
+
+    /// Move to the next/prev problem (`+1` / `-1`), resetting reveal + scroll.
+    fn step(&mut self, forward: bool) {
+        let n = self.problem_count();
+        if n == 0 {
+            return;
+        }
+        if forward {
+            self.cur = (self.cur + 1).min(n - 1);
+        } else {
+            self.cur = self.cur.saturating_sub(1);
+        }
+        self.revealed = false;
+        self.scroll = 0;
     }
 }
 /// Course mode binds the dashboard to a subject folder instead of the omp windows.
@@ -221,18 +246,34 @@ impl<'a> App<'a> {
         Some((id, topic))
     }
 
+    /// The `(id, topic)` whose lesson `p`/Enter should open, resolved per tab in
+    /// course mode: the selected kanban card (tab 1) or the selected due item on
+    /// the review list (tab 0). `None` in window mode or when nothing is selected.
+    fn selected_lesson_target(&self) -> Option<(String, String)> {
+        self.course.as_ref()?;
+        match self.tab {
+            1 => self.selected_topic(),
+            0 => self
+                .deck
+                .due(self.tutor.now())
+                .get(self.study_row)
+                .map(|u| (u.id.clone(), u.topic.clone())),
+            _ => None,
+        }
+    }
+
     /// Open the lesson overlay for the selected topic. Shows a cached lesson
     /// instantly; otherwise queues a draft via the brain (blocking, like `mine`).
     fn open_lesson(&mut self) {
         let Some(c) = &self.course else { return };
-        let Some((id, topic)) = self.selected_topic() else {
+        let Some((id, topic)) = self.selected_lesson_target() else {
             return;
         };
         let course = CourseDir::new(&c.dir);
         match course.read_lesson(&id) {
             Ok(Some(md)) => {
                 let lesson = Lesson::parse(&md, &topic);
-                self.lesson = Some(LessonView::new(id, topic, lesson));
+                self.begin_lesson(id, topic, lesson);
             }
             _ => {
                 self.status = self.locale.lesson_generating(&topic);
@@ -266,7 +307,7 @@ impl<'a> App<'a> {
             Ok(md) => {
                 let _ = course.write_lesson(&id, &md);
                 let lesson = Lesson::parse(&md, &topic);
-                self.lesson = Some(LessonView::new(id, topic, lesson));
+                self.begin_lesson(id, topic, lesson);
                 self.status.clear();
             }
             Err(e) => {
@@ -275,11 +316,53 @@ impl<'a> App<'a> {
         }
     }
 
+    /// Open a parsed lesson: sync the deck card's problem count (so progress knows
+    /// how many problems the topic has), persist, and show the overlay at problem 1.
+    fn begin_lesson(&mut self, id: String, topic: String, lesson: Lesson) {
+        let n = lesson.problems.len();
+        if let Some(card) = self.deck.get_mut(&id) {
+            card.sync_problems(n);
+        }
+        let _ = self.store.save(&self.deck);
+        self.lesson = Some(LessonView::new(id, topic, lesson));
+    }
+
+    /// The per-problem 已掌握 marks of the open lesson's topic (empty if none).
+    fn lesson_solved(&self) -> Vec<bool> {
+        match &self.lesson {
+            Some(v) => self
+                .deck
+                .cards
+                .iter()
+                .find(|u| u.id == v.id)
+                .map(|u| u.solved.clone())
+                .unwrap_or_default(),
+            None => Vec::new(),
+        }
+    }
+
+    /// Toggle 已掌握 on the current problem, re-derive the topic's stage from its
+    /// problem completion, and persist — so the kanban and progress bar move.
+    fn toggle_current_solved(&mut self) {
+        let Some(v) = &self.lesson else { return };
+        let (id, i) = (v.id.clone(), v.cur);
+        let now = self.tutor.now();
+        if let Some(card) = self.deck.get_mut(&id) {
+            card.toggle_solved(i, now);
+            card.sync_stage_from_problems(now);
+        }
+        let _ = self.store.save(&self.deck);
+    }
+
     /// Upper bound for the lesson overlay's scroll offset (keeps at least the last
     /// line reachable). Zero when no lesson is open.
     fn lesson_scroll_max(&self) -> u16 {
         match &self.lesson {
-            Some(v) => (lesson_lines(v, self.locale).len().saturating_sub(1)) as u16,
+            Some(v) => {
+                (lesson_lines(v, &self.lesson_solved(), self.locale)
+                    .len()
+                    .saturating_sub(1)) as u16
+            }
             None => 0,
         }
     }
@@ -402,11 +485,26 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
                     match key.code {
                         KeyCode::Esc | KeyCode::Char('q') => app.lesson = None,
                         KeyCode::Char('l') => app.locale = app.locale.toggle(),
-                        KeyCode::Char('s') => {
+                        // Navigate between problems, one at a time.
+                        KeyCode::Left => {
                             if let Some(v) = app.lesson.as_mut() {
-                                v.show_solutions = !v.show_solutions;
+                                v.step(false);
                             }
                         }
+                        KeyCode::Right => {
+                            if let Some(v) = app.lesson.as_mut() {
+                                v.step(true);
+                            }
+                        }
+                        // Attempt first, then reveal the 题解.
+                        KeyCode::Char(' ') => {
+                            if let Some(v) = app.lesson.as_mut() {
+                                v.revealed = !v.revealed;
+                                v.scroll = 0;
+                            }
+                        }
+                        // Mark the current problem 已掌握 (moves progress + kanban).
+                        KeyCode::Enter => app.toggle_current_solved(),
                         KeyCode::Char('g') if app.course.is_some() => app.regen_lesson(),
                         KeyCode::Down | KeyCode::Char('j') => {
                             let max = app.lesson_scroll_max();
@@ -453,7 +551,9 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
                     KeyCode::Char(' ') if app.course.is_some() && app.tab == 1 => {
                         app.edit_selected(|c, now| c.reschedule(now));
                     }
-                    KeyCode::Char('p') if app.course.is_some() && app.tab == 1 => {
+                    KeyCode::Enter | KeyCode::Char('p')
+                        if app.course.is_some() && (app.tab == 0 || app.tab == 1) =>
+                    {
                         app.open_lesson();
                     }
                     KeyCode::Down | KeyCode::Char('j') => app.down(),
@@ -486,7 +586,8 @@ fn ui(frame: &mut Frame, app: &App) {
         _ => brief_tab(frame, app, body),
     }
     if let Some(view) = &app.lesson {
-        lesson_overlay(frame, view, app.locale, body);
+        let solved = app.lesson_solved();
+        lesson_overlay(frame, view, &solved, app.locale, body);
     }
 
     let status_line = Paragraph::new(Line::from(Span::styled(
@@ -841,6 +942,14 @@ fn course_board_tab(frame: &mut Frame, app: &App, area: Rect) {
                     };
                     head.push(Span::styled(mark, Style::default().fg(color)));
                 }
+                if u.problems_total() > 0 {
+                    let (s, tot) = (u.solved_count(), u.problems_total());
+                    let color = if s == tot { ACCENT } else { Color::Cyan };
+                    head.push(Span::styled(
+                        format!("  {}", app.locale.lesson_badge(s, tot)),
+                        Style::default().fg(color),
+                    ));
+                }
                 let sub = Line::from(Span::styled(
                     format!("  {}", truncate(&u.detail, 24)),
                     Style::default().fg(Color::DarkGray),
@@ -869,64 +978,107 @@ fn course_board_tab(frame: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-/// Build the styled lines of a lesson overlay: topic, overview, then each problem
-/// with its 题解 (or a hidden note when solutions are toggled off for self-test).
-fn lesson_lines(view: &LessonView, locale: Locale) -> Vec<Line<'static>> {
+/// Build the styled lines of the lesson overlay: a progress header, the current
+/// problem's statement, then either its 题解 (revealed) or an attempt-first hint.
+/// `solved` is the topic's per-problem completion (same length as the problems).
+fn lesson_lines(view: &LessonView, solved: &[bool], locale: Locale) -> Vec<Line<'static>> {
     let mut lines: Vec<Line> = Vec::new();
-    if view.lesson.is_empty() {
+    if view.lesson.problems.is_empty() {
         lines.push(Line::from(Span::styled(
             locale.lesson_absent(),
             Style::default().fg(Color::DarkGray),
         )));
         return lines;
     }
-    if !view.lesson.overview.is_empty() {
+    let n = view.lesson.problems.len();
+    let done = solved.iter().filter(|b| **b).count();
+    let cur = view.cur.min(n - 1);
+
+    // Header: 题目 i/N · 本话题 done/N 已掌握.
+    lines.push(Line::from(vec![
+        Span::styled(
+            locale.lesson_counter(cur + 1, n),
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("   "),
+        Span::styled(
+            locale.lesson_topic_progress(done, n),
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]));
+    // Overview only on the first problem, so later problems stay focused.
+    if cur == 0 && !view.lesson.overview.is_empty() {
+        lines.push(Line::from(""));
         for l in view.lesson.overview.lines() {
             lines.push(Line::from(Span::styled(
                 l.to_string(),
                 Style::default().fg(Color::Gray),
             )));
         }
-        lines.push(Line::from(""));
     }
-    for (i, p) in view.lesson.problems.iter().enumerate() {
-        let label = if p.title.is_empty() {
-            locale.lesson_problem(i + 1)
-        } else {
-            p.title.clone()
-        };
-        lines.push(Line::from(Span::styled(
-            format!("── {label} ──"),
+    lines.push(Line::from(""));
+
+    let p = &view.lesson.problems[cur];
+    let mark = if solved.get(cur).copied().unwrap_or(false) {
+        Span::styled(
+            format!("✓ {}", locale.lesson_solved_tag()),
             Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-        )));
-        for l in p.prompt.lines() {
-            lines.push(Line::from(l.to_string()));
-        }
-        lines.push(Line::from(Span::styled(
-            format!("[{}]", locale.lesson_solution()),
+        )
+    } else {
+        Span::styled(
+            format!("○ {}", locale.lesson_unsolved_tag()),
+            Style::default().fg(Color::DarkGray),
+        )
+    };
+    let label = if p.title.is_empty() {
+        locale.lesson_problem(cur + 1)
+    } else {
+        p.title.clone()
+    };
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("── {label} ── "),
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
+        ),
+        mark,
+    ]));
+    for l in p.prompt.lines() {
+        lines.push(Line::from(l.to_string()));
+    }
+    lines.push(Line::from(""));
+    if view.revealed {
+        lines.push(Line::from(Span::styled(
+            format!("【{}】", locale.lesson_solution()),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         )));
-        if view.show_solutions {
-            for l in p.solution.lines() {
-                lines.push(Line::from(Span::styled(
-                    l.to_string(),
-                    Style::default().fg(Color::Cyan),
-                )));
-            }
-        } else {
+        for l in p.solution.lines() {
             lines.push(Line::from(Span::styled(
-                locale.lesson_solution_hidden().to_string(),
-                Style::default().fg(Color::DarkGray),
+                l.to_string(),
+                Style::default().fg(Color::Cyan),
             )));
         }
-        lines.push(Line::from(""));
+    } else {
+        lines.push(Line::from(Span::styled(
+            locale.lesson_attempt_hint().to_string(),
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC),
+        )));
     }
     lines
 }
 
-fn lesson_overlay(frame: &mut Frame, view: &LessonView, locale: Locale, area: Rect) {
+fn lesson_overlay(
+    frame: &mut Frame,
+    view: &LessonView,
+    solved: &[bool],
+    locale: Locale,
+    area: Rect,
+) {
     let title = format!(" {} ", view.topic);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -935,7 +1087,7 @@ fn lesson_overlay(frame: &mut Frame, view: &LessonView, locale: Locale, area: Re
             title,
             Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         ));
-    let body = Text::from(lesson_lines(view, locale));
+    let body = Text::from(lesson_lines(view, solved, locale));
     let para = Paragraph::new(body)
         .block(block)
         .wrap(Wrap { trim: false })
@@ -1118,9 +1270,11 @@ mod tests {
     }
 
     #[test]
-    fn lesson_overlay_toggles_solution_visibility() {
-        let md = "# 二分\n\n概述文字。\n\n## 题目 1\n找 x\n### 题解\n取中点\n";
-        let view = LessonView::new("二分".into(), "二分".into(), Lesson::parse(md, "二分"));
+    fn lesson_overlay_is_attempt_first_and_one_at_a_time() {
+        let md = "# 二分\n\n概述文字。\n\n## 题目 1\n找 x\n### 题解\n取中点\n\
+                  ## 题目 2\n找边界\n### 题解\n收敛右端\n";
+        let mut view = LessonView::new("二分".into(), "二分".into(), Lesson::parse(md, "二分"));
+        let solved = [false, false];
         let flat = |lines: Vec<Line>| -> String {
             lines
                 .iter()
@@ -1128,15 +1282,32 @@ mod tests {
                 .map(|s| s.content.to_string())
                 .collect()
         };
-        let shown = flat(lesson_lines(&view, Locale::Zh));
-        assert!(shown.contains("取中点"));
-        assert!(shown.contains("题解"));
 
-        let mut hidden_view = view;
-        hidden_view.show_solutions = false;
-        let hidden = flat(lesson_lines(&hidden_view, Locale::Zh));
+        // Problem 1, not revealed: shows the prompt + counter + attempt hint, but
+        // NOT the solution, and NOT the second problem's prompt.
+        let hidden = flat(lesson_lines(&view, &solved, Locale::Zh));
+        assert!(hidden.contains("题目 1/2"));
+        assert!(hidden.contains("找 x"));
         assert!(!hidden.contains("取中点"));
-        assert!(hidden.contains("题解已隐藏"));
+        assert!(!hidden.contains("找边界"));
+        assert!(hidden.contains("先自己做"));
+
+        // Reveal → the solution appears.
+        view.revealed = true;
+        assert!(flat(lesson_lines(&view, &solved, Locale::Zh)).contains("取中点"));
+
+        // Next problem → only problem 2 is shown, reveal reset.
+        view.step(true);
+        assert!(!view.revealed);
+        let p2 = flat(lesson_lines(&view, &solved, Locale::Zh));
+        assert!(p2.contains("题目 2/2"));
+        assert!(p2.contains("找边界"));
+        assert!(!p2.contains("找 x"));
+
+        // A solved mark renders the 已掌握 badge for that problem.
+        view.cur = 0;
+        let marked = flat(lesson_lines(&view, &[true, false], Locale::Zh));
+        assert!(marked.contains("已掌握"));
     }
     #[test]
     fn board_tab_renders_columns_and_card() {
