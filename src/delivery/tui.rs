@@ -73,6 +73,8 @@ struct LessonView {
     /// Whether the current problem's 题解 is revealed.
     revealed: bool,
     scroll: u16,
+    /// When `Some(i)`, the code-language picker is open with row `i` selected.
+    picker: Option<usize>,
 }
 
 impl LessonView {
@@ -84,6 +86,7 @@ impl LessonView {
             cur: 0,
             revealed: false,
             scroll: 0,
+            picker: None,
         }
     }
 
@@ -352,22 +355,51 @@ impl<'a> App<'a> {
         }
     }
 
-    /// Cycle the course's lesson code language, persist it, and re-draft.
-    fn cycle_code_lang(&mut self) {
-        if self.job.is_some() || self.lesson.is_none() {
+    /// Open the code-language picker, preselecting the course's current language.
+    fn open_lang_picker(&mut self) {
+        if self.lesson.is_none() {
             return;
         }
-        let Some(c) = &self.course else { return };
-        let idx = c
-            .code_lang
-            .as_deref()
+        let idx = self
+            .course
+            .as_ref()
+            .and_then(|c| c.code_lang.as_deref())
             .and_then(|l| CODE_LANGS.iter().position(|x| *x == l))
-            .map(|i| i + 1)
             .unwrap_or(0);
-        let next = CODE_LANGS[idx % CODE_LANGS.len()].to_string();
-        let _ = CourseDir::new(&c.dir).write_config(&CourseConfig {
-            code_language: Some(next.clone()),
-        });
+        if let Some(v) = self.lesson.as_mut() {
+            v.picker = Some(idx);
+        }
+    }
+
+    /// Move the picker selection by `delta`, wrapping around the language list.
+    fn picker_move(&mut self, delta: isize) {
+        if let Some(v) = self.lesson.as_mut() {
+            if let Some(i) = v.picker {
+                let n = CODE_LANGS.len() as isize;
+                v.picker = Some(((i as isize + delta) % n + n) as usize % CODE_LANGS.len());
+            }
+        }
+    }
+
+    /// Confirm the picked language: persist it, close the picker, and — only when
+    /// it actually changed — re-draft the lesson in the background.
+    fn picker_confirm(&mut self) {
+        let Some(idx) = self.lesson.as_ref().and_then(|v| v.picker) else {
+            return;
+        };
+        if let Some(v) = self.lesson.as_mut() {
+            v.picker = None;
+        }
+        let next = CODE_LANGS[idx].to_string();
+        let cur = self.course.as_ref().and_then(|c| c.code_lang.clone());
+        if cur.as_deref() == Some(next.as_str()) {
+            return; // already this language — keep the current lesson, no re-draft
+        }
+        if let Some(c) = &self.course {
+            let _ = CourseDir::new(&c.dir).write_config(&CourseConfig {
+                code_language: Some(next.clone()),
+            });
+        }
         if let Some(c) = &mut self.course {
             c.code_lang = Some(next);
         }
@@ -588,6 +620,21 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
                 }
                 // While the lesson overlay is open it captures every key.
                 if app.lesson.is_some() {
+                    // The code-language picker, when open, captures keys first.
+                    if app.lesson.as_ref().and_then(|v| v.picker).is_some() {
+                        match key.code {
+                            KeyCode::Up | KeyCode::Char('k') => app.picker_move(-1),
+                            KeyCode::Down | KeyCode::Char('j') => app.picker_move(1),
+                            KeyCode::Enter => app.picker_confirm(),
+                            KeyCode::Esc => {
+                                if let Some(v) = app.lesson.as_mut() {
+                                    v.picker = None;
+                                }
+                            }
+                            _ => {}
+                        }
+                        continue;
+                    }
                     match key.code {
                         KeyCode::Esc | KeyCode::Char('q') => app.lesson = None,
                         KeyCode::Char('l') => app.locale = app.locale.toggle(),
@@ -612,8 +659,8 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
                         // Mark the current problem 已掌握 (moves progress + kanban).
                         KeyCode::Enter => app.toggle_current_solved(),
                         KeyCode::Char('g') if app.course.is_some() => app.regen_lesson(),
-                        // Cycle the lesson's code language and re-draft.
-                        KeyCode::Char('c') if app.course.is_some() => app.cycle_code_lang(),
+                        // Open the code-language picker.
+                        KeyCode::Char('c') if app.course.is_some() => app.open_lang_picker(),
                         KeyCode::Down | KeyCode::Char('j') => {
                             let max = app.lesson_scroll_max();
                             if let Some(v) = app.lesson.as_mut() {
@@ -691,6 +738,9 @@ fn ui(frame: &mut Frame, app: &App) {
         let solved = app.lesson_solved();
         let code = app.course.as_ref().and_then(|c| c.code_lang.as_deref());
         lesson_overlay(frame, view, &solved, code, app.locale, body);
+        if let Some(idx) = view.picker {
+            lang_picker(frame, idx, app.locale, body);
+        }
     }
 
     // Spinner while a background omp job runs, so generation never looks frozen.
@@ -706,7 +756,10 @@ fn ui(frame: &mut Frame, app: &App) {
     )));
     frame.render_widget(status_line, status);
 
-    let footer_text = if app.lesson.is_some() {
+    let picker_open = app.lesson.as_ref().and_then(|v| v.picker).is_some();
+    let footer_text = if picker_open {
+        app.locale.lesson_picker_footer()
+    } else if app.lesson.is_some() {
         app.locale.lesson_footer()
     } else if app.course.is_some() {
         app.locale.course_footer(app.tab)
@@ -1208,6 +1261,48 @@ fn lesson_overlay(
         .scroll((view.scroll, 0));
     frame.render_widget(Clear, area);
     frame.render_widget(para, area);
+}
+
+/// A centered rect of at most `w`×`h` within `area`.
+fn centered(area: Rect, w: u16, h: u16) -> Rect {
+    let w = w.min(area.width);
+    let h = h.min(area.height);
+    Rect {
+        x: area.x + (area.width - w) / 2,
+        y: area.y + (area.height - h) / 2,
+        width: w,
+        height: h,
+    }
+}
+
+/// The code-language picker popup: a small centered list with `sel` highlighted.
+fn lang_picker(frame: &mut Frame, sel: usize, locale: Locale, area: Rect) {
+    let items: Vec<ListItem> = CODE_LANGS
+        .iter()
+        .map(|l| ListItem::new(Line::from(format!("  {l}"))))
+        .collect();
+    let h = (CODE_LANGS.len() as u16) + 2;
+    let rect = centered(area, 28, h);
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(ACCENT))
+                .title(Span::styled(
+                    format!(" {} ", locale.lesson_picker_title()),
+                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                )),
+        )
+        .highlight_style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(ACCENT)
+                .add_modifier(Modifier::BOLD),
+        );
+    let mut state = ListState::default();
+    state.select(Some(sel.min(CODE_LANGS.len() - 1)));
+    frame.render_widget(Clear, rect);
+    frame.render_stateful_widget(list, rect, &mut state);
 }
 
 fn course_brief_tab(frame: &mut Frame, app: &App, area: Rect) {

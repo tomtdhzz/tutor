@@ -367,6 +367,22 @@ impl Locale {
         }
     }
 
+    /// Title of the code-language picker popup.
+    pub fn lesson_picker_title(self) -> &'static str {
+        match self {
+            Locale::Zh => "选择代码语言",
+            Locale::En => "Pick code language",
+        }
+    }
+
+    /// Footer hints while the code-language picker is open.
+    pub fn lesson_picker_footer(self) -> &'static str {
+        match self {
+            Locale::Zh => " ↑↓ 选择 · Enter 确定并生成 · esc 取消 ",
+            Locale::En => " ↑↓ choose · Enter confirm & generate · esc cancel ",
+        }
+    }
+
     /// Status line while the brain drafts a lesson.
     pub fn lesson_generating(self, topic: &str) -> String {
         match self {

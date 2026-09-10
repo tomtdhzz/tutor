@@ -126,7 +126,7 @@ bar and the per-card `题 s/N` badge move as you go; finishing all of a topic's 
 masters it. Lessons are cached to `<dir>/.tutor/lessons/<id>.md` (editable Markdown,
 portable, git-friendly) and your marks to the deck, so reopening is instant; `g` redrafts.
 Generation runs in the **background** — the UI never freezes while `omp -p` works — and you
-pick the **code language** with `c` in the lesson (or `--code rust` on `course new`/`lesson`,
+pick the **code language** by pressing `c` in the lesson to open a language picker (or `--code rust` on `course new`/`lesson`,
 persisted per course).
 
 **It closes the loop with your sessions.** Any omp session whose cwd is inside the
