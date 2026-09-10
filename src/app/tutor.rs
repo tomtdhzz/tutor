@@ -126,14 +126,40 @@ impl<'a> Tutor<'a> {
     }
 
     /// Draft a learning roadmap for a subject via the LLM, grounded on well-known
-    /// public paths. Returns editable Markdown (title, sections, `- [ ]` topics).
-    pub fn generate_roadmap(&self, summarizer: &dyn Summarizer, subject: &str) -> Result<String> {
+    /// public paths. `lang` is a natural-language instruction (from the delivery
+    /// layer) selecting the output language. Returns editable Markdown.
+    pub fn generate_roadmap(
+        &self,
+        summarizer: &dyn Summarizer,
+        subject: &str,
+        lang: &str,
+    ) -> Result<String> {
         let md = summarizer
-            .run(&crate::domain::course::roadmap_prompt(subject))
+            .run(&crate::domain::course::roadmap_prompt(subject, lang))
             .context("roadmap generator call failed")?;
         // Trust but sanity-check: it must contain at least one topic bullet.
         if !md.contains("- [") {
             anyhow::bail!("model did not return a roadmap in the expected Markdown shape");
+        }
+        Ok(md.trim().to_string())
+    }
+
+    /// Draft a lesson (overview + practice problems with worked solutions) for one
+    /// roadmap topic via the LLM. `lang` selects the output language. Returns
+    /// editable Markdown in the lesson template.
+    pub fn generate_lesson(
+        &self,
+        summarizer: &dyn Summarizer,
+        subject: &str,
+        topic: &str,
+        lang: &str,
+    ) -> Result<String> {
+        let md = summarizer
+            .run(&crate::domain::lesson::lesson_prompt(subject, topic, lang))
+            .context("lesson generator call failed")?;
+        // A usable lesson must carry at least one problem heading.
+        if !md.contains("## ") {
+            anyhow::bail!("model did not return a lesson in the expected Markdown shape");
         }
         Ok(md.trim().to_string())
     }

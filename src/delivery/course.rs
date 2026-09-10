@@ -6,7 +6,8 @@ use anyhow::Result;
 use super::i18n::Locale;
 use super::{bar, date_of};
 use crate::adapters::{CourseDir, FileDeckStore};
-use crate::app::{Clock, DeckStore, Tutor};
+use crate::app::{Clock, DeckStore, Summarizer, Tutor};
+use crate::domain::lesson::{starter_lesson, Lesson};
 use crate::domain::{course, CourseProgress, LoopStage, ReviewPlan, StudyDeck, WorkState};
 
 /// Write the roadmap into `<dir>/roadmap.md` and seed `<dir>/.tutor/deck.json`.
@@ -138,6 +139,74 @@ pub fn act(
         ),
     }
     Ok(())
+}
+
+/// Show a topic's lesson (overview + 题目/题解). Loads the cached lesson if one
+/// exists; otherwise drafts it via the brain (or writes an offline starter when
+/// `summarizer` is `None`) and caches it under `<dir>/.tutor/lessons/`.
+pub fn lesson(
+    tutor: &Tutor,
+    course: &CourseDir,
+    locale: Locale,
+    topic: &str,
+    summarizer: Option<&dyn Summarizer>,
+) -> Result<()> {
+    let (deck, subject, _store) = load(tutor, course)?;
+    let id = select(&deck, topic).ok_or_else(|| {
+        anyhow::anyhow!("no topic matching \"{topic}\" — see `tutor course state` for topics")
+    })?;
+    let title = deck
+        .cards
+        .iter()
+        .find(|c| c.id == id)
+        .map(|c| c.topic.clone())
+        .unwrap_or_else(|| topic.to_string());
+
+    let md = match course.read_lesson(&id)? {
+        Some(existing) => existing,
+        None => {
+            let drafted = match summarizer {
+                Some(s) => {
+                    eprintln!("{}", locale.lesson_generating(&title));
+                    tutor.generate_lesson(s, &subject, &title, locale.lang_hint())?
+                }
+                None => starter_lesson(&title),
+            };
+            course.write_lesson(&id, &drafted)?;
+            drafted
+        }
+    };
+
+    print!("{}", render_lesson(&Lesson::parse(&md, &title), locale));
+    Ok(())
+}
+
+/// Human-readable lesson: topic, overview, then each problem with its 题解.
+fn render_lesson(lesson: &Lesson, locale: Locale) -> String {
+    let mut s = format!("{}\n", lesson.topic);
+    if !lesson.overview.is_empty() {
+        s.push_str(&lesson.overview);
+        s.push('\n');
+    }
+    for (i, p) in lesson.problems.iter().enumerate() {
+        s.push('\n');
+        let label = if p.title.is_empty() {
+            locale.lesson_problem(i + 1)
+        } else {
+            p.title.clone()
+        };
+        s.push_str(&format!("── {label} ──\n"));
+        if !p.prompt.is_empty() {
+            s.push_str(&p.prompt);
+            s.push('\n');
+        }
+        s.push_str(&format!("[{}]\n", locale.lesson_solution()));
+        if !p.solution.is_empty() {
+            s.push_str(&p.solution);
+            s.push('\n');
+        }
+    }
+    s
 }
 
 /// First card whose id or topic contains `needle` (case-insensitive), in deck order.

@@ -40,8 +40,13 @@ fn build_fixture() -> PathBuf {
 /// binary test uses the real `SystemClock`, so it must build a fixture that is
 /// recent relative to *now*, not a fixed calendar date.
 fn build_fixture_at(ms: u64) -> PathBuf {
+    // pid + nanos + a monotonic counter: guarantees a distinct root per call even
+    // when two tests enter within the same nanosecond, so their `remove_dir_all`
+    // cleanups never race onto a shared directory.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let uniq = format!(
-        "tutor-it-{}-{}",
+        "tutor-it-{}-{}-{seq}",
         std::process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)

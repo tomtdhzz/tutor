@@ -1,6 +1,6 @@
 [package]
 name = "tutor"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.88"
 description = "Local omp tutor: a study loop, subject courses, a per-window work board, and a daily briefing"

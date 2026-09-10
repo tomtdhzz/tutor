@@ -5,11 +5,13 @@
 
 pub mod briefing;
 pub mod course;
+pub mod lesson;
 pub mod pane;
 pub mod study;
 
 pub use briefing::DailyBriefing;
 pub use course::{CourseProgress, Syllabus, Topic};
+pub use lesson::{Lesson, Problem};
 pub use pane::{Activity, Board, Column, Lifecycle, Progress, WorkItem, WorkState};
 pub use study::{days_between, LoopStage, ReviewEntry, ReviewPlan, StudyDeck, Unknown};
 

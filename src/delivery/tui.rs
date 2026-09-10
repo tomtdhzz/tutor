@@ -16,12 +16,14 @@ use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::{DefaultTerminal, Frame};
 
 use super::i18n::Locale;
 use super::{bar, date_of, today_local, truncate};
+use crate::adapters::CourseDir;
 use crate::app::{DeckStore, ScannedSession, Summarizer, Tutor};
+use crate::domain::lesson::Lesson;
 use crate::domain::study::{LoopStage, Unknown};
 use crate::domain::{
     course, days_between, human_ago, Board, Column, CourseProgress, DailyBriefing, ReviewPlan,
@@ -35,6 +37,28 @@ enum Pending {
     None,
     Mine,
     Brief,
+    Lesson,
+}
+
+/// The lesson overlay: a topic's 题目/题解, scrollable, with a self-test toggle.
+struct LessonView {
+    id: String,
+    topic: String,
+    lesson: Lesson,
+    scroll: u16,
+    show_solutions: bool,
+}
+
+impl LessonView {
+    fn new(id: String, topic: String, lesson: Lesson) -> LessonView {
+        LessonView {
+            id,
+            topic,
+            lesson,
+            scroll: 0,
+            show_solutions: true,
+        }
+    }
 }
 /// Course mode binds the dashboard to a subject folder instead of the omp windows.
 struct CourseCtx {
@@ -60,6 +84,10 @@ struct App<'a> {
     study_row: usize,
     /// `Some` when the dashboard is scoped to a subject course.
     course: Option<CourseCtx>,
+    /// `Some` while the lesson overlay is open over the course kanban.
+    lesson: Option<LessonView>,
+    /// A queued lesson to draft via the brain: `(topic id, topic title)`.
+    lesson_req: Option<(String, String)>,
 }
 
 impl<'a> App<'a> {
@@ -89,6 +117,8 @@ impl<'a> App<'a> {
             rows: [0; 3],
             study_row: 0,
             course,
+            lesson: None,
+            lesson_req: None,
         };
         app.refresh()?;
         app.status.clear();
@@ -176,6 +206,82 @@ impl<'a> App<'a> {
             }
         }
         self.clamp();
+    }
+
+    /// The topic title of the currently selected kanban card, if any.
+    fn selected_topic(&self) -> Option<(String, String)> {
+        let id = self.selected_card_id()?;
+        let topic = self
+            .deck
+            .cards
+            .iter()
+            .find(|u| u.id == id)
+            .map(|u| u.topic.clone())
+            .unwrap_or_default();
+        Some((id, topic))
+    }
+
+    /// Open the lesson overlay for the selected topic. Shows a cached lesson
+    /// instantly; otherwise queues a draft via the brain (blocking, like `mine`).
+    fn open_lesson(&mut self) {
+        let Some(c) = &self.course else { return };
+        let Some((id, topic)) = self.selected_topic() else {
+            return;
+        };
+        let course = CourseDir::new(&c.dir);
+        match course.read_lesson(&id) {
+            Ok(Some(md)) => {
+                let lesson = Lesson::parse(&md, &topic);
+                self.lesson = Some(LessonView::new(id, topic, lesson));
+            }
+            _ => {
+                self.status = self.locale.lesson_generating(&topic);
+                self.lesson_req = Some((id, topic));
+                self.pending = Pending::Lesson;
+            }
+        }
+    }
+
+    /// Re-draft the lesson currently on screen, overwriting its cache.
+    fn regen_lesson(&mut self) {
+        if let Some(v) = &self.lesson {
+            self.status = self.locale.lesson_generating(&v.topic);
+            self.lesson_req = Some((v.id.clone(), v.topic.clone()));
+            self.pending = Pending::Lesson;
+        }
+    }
+
+    /// Draft the queued lesson via the brain, cache it, and open the overlay.
+    fn make_lesson(&mut self) {
+        let Some((id, topic)) = self.lesson_req.take() else {
+            return;
+        };
+        let Some(c) = &self.course else { return };
+        let course = CourseDir::new(&c.dir);
+        let subject = c.subject.clone();
+        match self
+            .tutor
+            .generate_lesson(self.summarizer, &subject, &topic, self.locale.lang_hint())
+        {
+            Ok(md) => {
+                let _ = course.write_lesson(&id, &md);
+                let lesson = Lesson::parse(&md, &topic);
+                self.lesson = Some(LessonView::new(id, topic, lesson));
+                self.status.clear();
+            }
+            Err(e) => {
+                self.status = self.locale.status_error(&e.to_string());
+            }
+        }
+    }
+
+    /// Upper bound for the lesson overlay's scroll offset (keeps at least the last
+    /// line reachable). Zero when no lesson is open.
+    fn lesson_scroll_max(&self) -> u16 {
+        match &self.lesson {
+            Some(v) => (lesson_lines(v, self.locale).len().saturating_sub(1)) as u16,
+            None => 0,
+        }
     }
 
     fn clamp(&mut self) {
@@ -278,12 +384,43 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
                 app.make_brief();
                 continue;
             }
+            Pending::Lesson => {
+                app.pending = Pending::None;
+                app.make_lesson();
+                continue;
+            }
             Pending::None => {}
         }
 
         if event::poll(std::time::Duration::from_millis(200))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind != KeyEventKind::Press {
+                    continue;
+                }
+                // While the lesson overlay is open it captures every key.
+                if app.lesson.is_some() {
+                    match key.code {
+                        KeyCode::Esc | KeyCode::Char('q') => app.lesson = None,
+                        KeyCode::Char('l') => app.locale = app.locale.toggle(),
+                        KeyCode::Char('s') => {
+                            if let Some(v) = app.lesson.as_mut() {
+                                v.show_solutions = !v.show_solutions;
+                            }
+                        }
+                        KeyCode::Char('g') if app.course.is_some() => app.regen_lesson(),
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            let max = app.lesson_scroll_max();
+                            if let Some(v) = app.lesson.as_mut() {
+                                v.scroll = (v.scroll + 1).min(max);
+                            }
+                        }
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            if let Some(v) = app.lesson.as_mut() {
+                                v.scroll = v.scroll.saturating_sub(1);
+                            }
+                        }
+                        _ => {}
+                    }
                     continue;
                 }
                 match key.code {
@@ -316,6 +453,9 @@ fn run_loop(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
                     KeyCode::Char(' ') if app.course.is_some() && app.tab == 1 => {
                         app.edit_selected(|c, now| c.reschedule(now));
                     }
+                    KeyCode::Char('p') if app.course.is_some() && app.tab == 1 => {
+                        app.open_lesson();
+                    }
                     KeyCode::Down | KeyCode::Char('j') => app.down(),
                     KeyCode::Up | KeyCode::Char('k') => app.up(),
                     KeyCode::Left | KeyCode::Char('h') => app.left(),
@@ -345,6 +485,9 @@ fn ui(frame: &mut Frame, app: &App) {
         _ if app.course.is_some() => course_brief_tab(frame, app, body),
         _ => brief_tab(frame, app, body),
     }
+    if let Some(view) = &app.lesson {
+        lesson_overlay(frame, view, app.locale, body);
+    }
 
     let status_line = Paragraph::new(Line::from(Span::styled(
         format!(" {}", app.status),
@@ -352,7 +495,9 @@ fn ui(frame: &mut Frame, app: &App) {
     )));
     frame.render_widget(status_line, status);
 
-    let footer_text = if app.course.is_some() {
+    let footer_text = if app.lesson.is_some() {
+        app.locale.lesson_footer()
+    } else if app.course.is_some() {
         app.locale.course_footer(app.tab)
     } else {
         app.locale.footer(app.tab)
@@ -724,6 +869,81 @@ fn course_board_tab(frame: &mut Frame, app: &App, area: Rect) {
     }
 }
 
+/// Build the styled lines of a lesson overlay: topic, overview, then each problem
+/// with its 题解 (or a hidden note when solutions are toggled off for self-test).
+fn lesson_lines(view: &LessonView, locale: Locale) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line> = Vec::new();
+    if view.lesson.is_empty() {
+        lines.push(Line::from(Span::styled(
+            locale.lesson_absent(),
+            Style::default().fg(Color::DarkGray),
+        )));
+        return lines;
+    }
+    if !view.lesson.overview.is_empty() {
+        for l in view.lesson.overview.lines() {
+            lines.push(Line::from(Span::styled(
+                l.to_string(),
+                Style::default().fg(Color::Gray),
+            )));
+        }
+        lines.push(Line::from(""));
+    }
+    for (i, p) in view.lesson.problems.iter().enumerate() {
+        let label = if p.title.is_empty() {
+            locale.lesson_problem(i + 1)
+        } else {
+            p.title.clone()
+        };
+        lines.push(Line::from(Span::styled(
+            format!("── {label} ──"),
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        )));
+        for l in p.prompt.lines() {
+            lines.push(Line::from(l.to_string()));
+        }
+        lines.push(Line::from(Span::styled(
+            format!("[{}]", locale.lesson_solution()),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )));
+        if view.show_solutions {
+            for l in p.solution.lines() {
+                lines.push(Line::from(Span::styled(
+                    l.to_string(),
+                    Style::default().fg(Color::Cyan),
+                )));
+            }
+        } else {
+            lines.push(Line::from(Span::styled(
+                locale.lesson_solution_hidden().to_string(),
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+        lines.push(Line::from(""));
+    }
+    lines
+}
+
+fn lesson_overlay(frame: &mut Frame, view: &LessonView, locale: Locale, area: Rect) {
+    let title = format!(" {} ", view.topic);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(ACCENT))
+        .title(Span::styled(
+            title,
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ));
+    let body = Text::from(lesson_lines(view, locale));
+    let para = Paragraph::new(body)
+        .block(block)
+        .wrap(Wrap { trim: false })
+        .scroll((view.scroll, 0));
+    frame.render_widget(Clear, area);
+    frame.render_widget(para, area);
+}
+
 fn course_brief_tab(frame: &mut Frame, app: &App, area: Rect) {
     let p = CourseProgress::of(&app.deck);
     let counts = app.deck.counts();
@@ -897,6 +1117,27 @@ mod tests {
         buffer_string(&term)
     }
 
+    #[test]
+    fn lesson_overlay_toggles_solution_visibility() {
+        let md = "# 二分\n\n概述文字。\n\n## 题目 1\n找 x\n### 题解\n取中点\n";
+        let view = LessonView::new("二分".into(), "二分".into(), Lesson::parse(md, "二分"));
+        let flat = |lines: Vec<Line>| -> String {
+            lines
+                .iter()
+                .flat_map(|l| l.spans.iter())
+                .map(|s| s.content.to_string())
+                .collect()
+        };
+        let shown = flat(lesson_lines(&view, Locale::Zh));
+        assert!(shown.contains("取中点"));
+        assert!(shown.contains("题解"));
+
+        let mut hidden_view = view;
+        hidden_view.show_solutions = false;
+        let hidden = flat(lesson_lines(&hidden_view, Locale::Zh));
+        assert!(!hidden.contains("取中点"));
+        assert!(hidden.contains("题解已隐藏"));
+    }
     #[test]
     fn board_tab_renders_columns_and_card() {
         let s = render_tab(1);

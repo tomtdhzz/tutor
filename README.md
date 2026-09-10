@@ -93,8 +93,10 @@ tutor course board ./algo
 ```
 
 In the course dashboard: `←→`/`↑↓` pick a card, `.` advance a stage, `,` step back,
-`space` mark reviewed (schedules the next spaced review), `r` reloads roadmap edits.
-Offline? `tutor course new … --no-llm` writes a starter roadmap you fill in yourself.
+`space` mark reviewed (schedules the next spaced review), `p` open the topic's
+**lesson** (practice problems + solutions), `r` reloads roadmap edits. The roadmap
+and every lesson are drafted in your `--lang` (e.g. `tutor course new ./algo --subject "算法" --lang zh`
+writes them in Chinese). Offline? `tutor course new … --no-llm` writes a starter roadmap you fill in yourself.
 
 **Scriptable & observable (no TUI needed).** Every stage action has a one-shot
 command, and `course state` prints the whole course — progress, per-stage counts,
@@ -107,10 +109,19 @@ tutor course state ./algo --json          # machine-readable (stable schema)
 tutor course advance ./algo --topic "binary search"   # one stage toward mastery
 tutor course demote  ./algo --topic "binary search"   # one stage back
 tutor course review  ./algo --topic "binary search"   # record a spaced review
+tutor course lesson  ./algo --topic "binary search"   # draft/print the topic's lesson (problems + solutions)
 ```
 
 A topic only joins the review plan once it reaches **Review**; each `review`
 pushes its next date out on the 1·3·7·14·30-day ladder, and mastery drops it off.
+
+**Each topic is a lesson.** The roadmap lists topic *names*; `course lesson` (or `p`
+in the TUI) has the brain expand one into a **preview lesson** — a short overview plus
+3–5 practice **problems** of increasing difficulty, each with a full **solution** (idea,
+steps, code, complexity). Lessons are drafted on demand and cached to
+`<dir>/.tutor/lessons/<id>.md` (editable Markdown, portable, git-friendly), so reopening
+is instant with no omp call; in the TUI, `s` hides solutions for self-testing and `g`
+regenerates.
 
 **It closes the loop with your sessions.** Any omp session whose cwd is inside the
 course folder is folded in: the "things you don't know" it surfaces (your questions,
@@ -118,6 +129,39 @@ the errors you hit) join the deck as extra cards, and a roadmap topic you've sta
 touching — named in a session or a file in the folder (e.g. `recursion_solver.py`) —
 auto-advances Preview → Class. So the roadmap says what you *should* know; your sessions
 reveal what you *don't* yet; mastery still stays a deliberate act (`- [x]` or `.`).
+
+### Pick a 课题, read the 题解 — step by step
+
+Two ways: the interactive dashboard, or a one-shot command.
+
+**In the dashboard** — `tutor course ./algo`:
+
+1. It opens on the **Course** kanban (To do / Doing / Done). Each card is a roadmap
+   topic — your **课题**.
+2. Move the selection with `←→` (switch column) and `↑↓` / `jk` (move within a
+   column) to the topic you want to study.
+3. Press **`p`** to open that topic's **lesson**: a short overview, then `题目 1..N`,
+   each followed by its `题解`.
+4. Inside the lesson: `↑↓` / `jk` scroll · **`s`** hide every 题解 (try it yourself
+   first), `s` again to reveal · **`g`** redraft it via `omp -p` · **`esc`** go back
+   to the kanban.
+
+The first `p` (or `g`) on a topic calls `omp -p` — a few seconds, with `正在生成讲义…`
+in the status line. After that the lesson is cached, so reopening it is instant.
+
+**One-shot** — no dashboard, prints straight to the terminal:
+
+```bash
+# Pick the 课题 by a case-insensitive substring of its name; prints overview + 题目/题解
+tutor course lesson ./algo --topic "binary search"
+tutor course lesson ./algo --topic "二分" --lang zh   # a short fragment is enough
+```
+
+- `--topic` matches the first roadmap topic that contains the text — you don't need
+  the full name.
+- `--lang zh|en` forces the language the lesson is drafted in.
+- To redraft from scratch, delete the cached file (`rm ./algo/.tutor/lessons/<id>.md`)
+  or press `g` in the dashboard.
 
 ## Prerequisites
 
@@ -171,10 +215,18 @@ tutor briefing --no-llm
 # Force a language (auto-detected from locale otherwise; order-independent)
 tutor --lang en
 tutor board --lang zh
+
+# Open a subject course, then press p on a topic to study its 题目 + 题解
+tutor course ./algo
+tutor course lesson ./algo --topic "binary search"   # or one-shot to the terminal
 ```
 
-TUI keys: `Tab` / `1` `2` `3` switch tabs · `←→` move column, `↑↓`/`jk` select ·
+TUI keys (window mode): `Tab` / `1` `2` `3` switch tabs · `←→` move column, `↑↓`/`jk` select ·
 `m` mine study (omp -p) · `b` generate briefing (omp -p) · `r` refresh · `l` 中/EN · `q` quit.
+
+Course-mode keys (`tutor course <dir>`): `←→`/`↑↓` pick a topic · `.` advance · `,` back ·
+`space` mark reviewed · **`p` open the topic's lesson** · `r` reload roadmap · `l` 中/EN · `q` quit.
+In the lesson: `↑↓`/`jk` scroll · **`s` show/hide 题解** · `g` regenerate (omp -p) · `esc` back.
 
 Options:
 

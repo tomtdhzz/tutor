@@ -205,12 +205,15 @@ pub fn advance_roadmap(
 }
 
 /// The prompt handed to `omp -p` to draft a roadmap, grounded on public paths.
-pub fn roadmap_prompt(subject: &str) -> String {
+/// `lang` is a natural-language instruction (from the presentation layer) telling
+/// the model which language to write section/topic names in.
+pub fn roadmap_prompt(subject: &str, lang: &str) -> String {
     format!(
         "Create a practical, ordered learning roadmap for the subject: \"{subject}\".\n\
          Ground it in well-known public learning paths for this subject (for algorithms/DSA: \
          NeetCode 150, roadmap.sh, and common LeetCode pattern lists; for other subjects, the \
-         canonical community curricula). Order sections from fundamentals to advanced.\n\n\
+         canonical community curricula). Order sections from fundamentals to advanced.\n\
+         {lang}\n\n\
          Output ONLY GitHub-Flavored Markdown, nothing else, in exactly this shape:\n\
          # {subject} — learning roadmap\n\
          > AI-drafted starting point based on well-known public paths — edit freely.\n\n\

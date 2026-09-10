@@ -25,6 +25,7 @@ USAGE:
     tutor course advance <dir> --topic T   Move a topic one stage toward mastery
     tutor course demote  <dir> --topic T   Move a topic one stage back
     tutor course review  <dir> --topic T   Record a spaced review (pushes next date)
+    tutor course lesson  <dir> --topic T   Draft/show the topic's lesson (题目 + 题解)
 
 OPTIONS:
     --subject <text> Subject for `course new` (e.g. \"algorithms\")
@@ -48,6 +49,7 @@ enum CourseAct {
     Advance,
     Demote,
     Review,
+    Lesson,
 }
 
 enum Cmd {
@@ -154,13 +156,16 @@ fn parse_course(
                 action = CourseAct::New;
                 action_set = true;
             }
-            "board" | "state" | "advance" | "demote" | "review" if !action_set && dir.is_none() => {
+            "board" | "state" | "advance" | "demote" | "review" | "lesson"
+                if !action_set && dir.is_none() =>
+            {
                 action = match a.as_str() {
                     "board" => CourseAct::Board,
                     "state" => CourseAct::State,
                     "advance" => CourseAct::Advance,
                     "demote" => CourseAct::Demote,
-                    _ => CourseAct::Review,
+                    "review" => CourseAct::Review,
+                    _ => CourseAct::Lesson,
                 };
                 action_set = true;
             }
@@ -239,7 +244,8 @@ fn run(args: Args) -> Result<()> {
                         anyhow::anyhow!("`course new` needs --subject \"<subject>\"")
                     })?;
                     let md = if args.llm {
-                        match tutor.generate_roadmap(&summarizer, &subject) {
+                        match tutor.generate_roadmap(&summarizer, &subject, args.locale.lang_hint())
+                        {
                             Ok(md) => md,
                             Err(e) => {
                                 eprintln!(
@@ -265,6 +271,14 @@ fn run(args: Args) -> Result<()> {
                         _ => course_cli::Act::Review,
                     };
                     course_cli::act(&tutor, &course, args.locale, &topic, act)
+                }
+                CourseAct::Lesson => {
+                    let topic = topic.ok_or_else(|| {
+                        anyhow::anyhow!("`course lesson` needs --topic \"<substring>\"")
+                    })?;
+                    let sum: Option<&dyn tutor::app::Summarizer> =
+                        if args.llm { Some(&summarizer) } else { None };
+                    course_cli::lesson(&tutor, &course, args.locale, &topic, sum)
                 }
                 CourseAct::Open => {
                     if !course.exists() {

@@ -223,11 +223,11 @@ impl Locale {
     pub fn course_footer(self, tab: usize) -> &'static str {
         match (self, tab) {
             (Locale::Zh, 1) => {
-                " Tab/1-3 · ←→ 列 · ↑↓ 选 · . 进阶 · , 退阶 · 空格 复习 · r 重载路线 · l 中/EN · q "
+                " ←→ 列 · ↑↓ 选 · . 进阶 · , 退阶 · 空格 复习 · p 讲义 · r 重载 · l 中/EN · q "
             }
             (Locale::Zh, _) => " Tab/1-3 切换 · r 重载路线(roadmap.md) · l 中/EN · q 退出 ",
             (Locale::En, 1) => {
-                " Tab/1-3 · ←→ col · ↑↓ pick · . advance · , back · space review · r reload · l · q "
+                " ←→ col · ↑↓ pick · . advance · , back · space review · p lesson · r reload · l · q "
             }
             (Locale::En, _) => " Tab/1-3 switch · r reload roadmap.md · l zh/EN · q quit ",
         }
@@ -267,6 +267,69 @@ impl Locale {
         match self {
             Locale::Zh => "暂无复习项 — 把话题推进到\"复习\"阶段后会自动排期。",
             Locale::En => "No reviews scheduled — walk a topic into Review to populate this.",
+        }
+    }
+
+    /// A natural-language instruction handed down to the brain's prompts, so the
+    /// drafted roadmap/lesson is written in the display language. Kept here (not in
+    /// the domain) because it is a presentation-language decision.
+    pub fn lang_hint(self) -> &'static str {
+        match self {
+            Locale::Zh => {
+                "Write everything (section names, topics, the overview, all \
+                 problem statements and solutions) in Simplified Chinese (简体中文). Keep \
+                 well-known algorithm/proper names recognizable, adding the English term in \
+                 parentheses on first use where helpful."
+            }
+            Locale::En => "Write everything in English.",
+        }
+    }
+
+    /// Title above a topic's practice problem in the lesson view.
+    pub fn lesson_problem(self, n: usize) -> String {
+        match self {
+            Locale::Zh => format!("题目 {n}"),
+            Locale::En => format!("Problem {n}"),
+        }
+    }
+
+    /// Label for the worked-solution block.
+    pub fn lesson_solution(self) -> &'static str {
+        match self {
+            Locale::Zh => "题解",
+            Locale::En => "Solution",
+        }
+    }
+
+    /// Shown in place of a solution when solutions are hidden for self-testing.
+    pub fn lesson_solution_hidden(self) -> &'static str {
+        match self {
+            Locale::Zh => "（题解已隐藏 — 按 s 显示）",
+            Locale::En => "(solution hidden — press s to reveal)",
+        }
+    }
+
+    /// Footer hints inside the lesson overlay.
+    pub fn lesson_footer(self) -> &'static str {
+        match self {
+            Locale::Zh => " ↑↓/jk 滚动 · s 题解开关 · g 重新生成(omp) · esc 返回 ",
+            Locale::En => " ↑↓/jk scroll · s toggle solutions · g regenerate (omp) · esc back ",
+        }
+    }
+
+    /// Status line while the brain drafts a lesson.
+    pub fn lesson_generating(self, topic: &str) -> String {
+        match self {
+            Locale::Zh => format!("正在生成讲义：{topic} …（omp -p）"),
+            Locale::En => format!("drafting lesson: {topic} … (omp -p)"),
+        }
+    }
+
+    /// Overlay body when a topic has no lesson yet and the brain is unavailable.
+    pub fn lesson_absent(self) -> &'static str {
+        match self {
+            Locale::Zh => "这道题还没有讲义。按 g 用 omp 生成，或编辑 .tutor/lessons/ 下的文件。",
+            Locale::En => "No lesson yet. Press g to draft one with omp, or edit .tutor/lessons/.",
         }
     }
 }
